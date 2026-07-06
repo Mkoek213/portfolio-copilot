@@ -218,7 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Personal
-# AIDEVS_project_templates/
+AIDEVS_project_templates/
+plans/
+theory/
 
 # Node / Next.js
 node_modules/
