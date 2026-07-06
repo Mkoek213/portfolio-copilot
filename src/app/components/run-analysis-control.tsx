@@ -3,7 +3,7 @@
 import { useActionState, useEffect } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bot, Loader2, Play } from "lucide-react";
+import { Loader2, Play } from "lucide-react";
 import { runAnalysisAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 import type { LocalLlmHealth } from "@/lib/llm/local-llm-client";
@@ -19,8 +19,8 @@ function RunButton() {
 
   return (
     <button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>
-      {pending ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
-      {pending ? "Running analysis" : "Run analysis"}
+      {pending ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+      {pending ? "Running…" : "Run analysis"}
     </button>
   );
 }
@@ -44,14 +44,10 @@ export function RunAnalysisControl({
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack compact">
+    <div className="run-control">
       <form action={formAction} className="run-form">
-        <label className="model-select">
-          <span>
-            <Bot size={16} aria-hidden="true" />
-            Local model
-          </span>
-          <select name="llmModel" defaultValue={defaultModel}>
+        <label className="run-model" aria-label="Local model">
+          <select name="llmModel" defaultValue={defaultModel} title={localLlmHealth.available ? `Ollama available · ${localLlmHealth.model}` : localLlmHealth.reason}>
             {modelPresets.map((preset) => (
               <option key={preset.key} value={preset.model}>
                 {preset.label} · {preset.model}
@@ -61,11 +57,6 @@ export function RunAnalysisControl({
         </label>
         <RunButton />
       </form>
-      <div className={localLlmHealth.available ? "llm-status available" : "llm-status unavailable"}>
-        <span>{localLlmHealth.available ? "local Gemma available" : "local Gemma unavailable"}</span>
-        <strong>{localLlmHealth.model}</strong>
-        <small>{localLlmHealth.enabled ? "LLM reporter enabled" : "LLM reporter disabled"}</small>
-      </div>
       <ActionStatus state={state} />
     </div>
   );
