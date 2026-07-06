@@ -245,3 +245,6 @@ gmail-raw*
 gmail-debug*.json
 private-screenshots/
 redacted-screenshots/
+
+# Generated roadmap export
+ROADMAP.pdf
