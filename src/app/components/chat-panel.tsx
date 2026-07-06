@@ -41,7 +41,7 @@ export function ChatPanel({
   modelPresets: LocalLlmModelPreset[];
   defaultModel: string;
 }) {
-  const [state, action] = useActionState(sendChatMessageAction, initialState);
+  const [state, action, isPending] = useActionState(sendChatMessageAction, initialState);
   const [draft, setDraft] = useState("");
   const router = useRouter();
   const listRef = useRef<HTMLDivElement>(null);
@@ -115,8 +115,13 @@ export function ChatPanel({
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+                return;
+              }
+
+              event.preventDefault();
+
+              if (!isPending) {
                 formRef.current?.requestSubmit();
               }
             }}

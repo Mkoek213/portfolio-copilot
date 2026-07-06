@@ -26,8 +26,8 @@ export function TransactionsTab({ data, params }: { data: DashboardData; params:
           <label><span>Category</span><select name="category" defaultValue={param(params, "category")}><option value="">Any</option>{EXPENSE_CATEGORY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           <label><span>Direction</span><select name="direction" defaultValue={param(params, "direction")}><option value="">Any</option><option value="INFLOW">Inflow</option><option value="OUTFLOW">Outflow</option></select></label>
           <label><span>Merchant</span><input name="merchant" defaultValue={param(params, "merchant")} placeholder="Search descriptions" /></label>
-          <label><span>Min</span><input name="amountMin" type="number" step="1" defaultValue={param(params, "amountMin")} /></label>
-          <label><span>Max</span><input name="amountMax" type="number" step="1" defaultValue={param(params, "amountMax")} /></label>
+          <label><span>Min</span><input name="amountMin" type="number" step="0.01" defaultValue={param(params, "amountMin")} /></label>
+          <label><span>Max</span><input name="amountMax" type="number" step="0.01" defaultValue={param(params, "amountMax")} /></label>
           <button className="secondary-button" type="submit"><Search size={16} aria-hidden="true" /> Filter</button>
         </form>
 

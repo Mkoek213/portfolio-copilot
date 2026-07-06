@@ -177,7 +177,6 @@ export async function loadDashboardData(params: SearchParams) {
       snapshotHistory,
       latestReport,
       reports,
-      runs,
       observations,
       reflections,
       strategySettings,
@@ -199,10 +198,9 @@ export async function loadDashboardData(params: SearchParams) {
         orderBy: { marketValueBase: "desc" }
       }),
       prisma.portfolioSnapshot.findFirst({ orderBy: { createdAt: "desc" } }),
-      prisma.portfolioSnapshot.findMany({ orderBy: { createdAt: "asc" }, take: 60, select: { createdAt: true, totalValueBase: true } }),
+      prisma.portfolioSnapshot.findMany({ orderBy: { createdAt: "desc" }, take: 60, select: { createdAt: true, totalValueBase: true } }),
       prisma.report.findFirst({ orderBy: { createdAt: "desc" }, include: { run: true } }),
       prisma.report.findMany({ orderBy: { createdAt: "desc" }, take: 16, include: { run: true } }),
-      prisma.agentRun.findMany({ orderBy: { startedAt: "desc" }, take: 8, include: { events: { orderBy: { createdAt: "asc" } } } }),
       prisma.observation.findMany({ orderBy: { createdAt: "desc" }, take: 24 }),
       prisma.reflection.findMany({ orderBy: { createdAt: "desc" }, take: 8 }),
       prisma.strategySettings.findUnique({ where: { resourceId: defaultStrategy.resourceId } }),
@@ -225,12 +223,16 @@ export async function loadDashboardData(params: SearchParams) {
       ensureSchedulerState(prisma)
     ]);
 
+    snapshotHistory.reverse();
+
     const chatThread = await getOrCreateGlobalChatThread(prisma);
-    const chatMessages = await prisma.chatMessage.findMany({
-      where: { threadId: chatThread.id },
-      orderBy: { createdAt: "asc" },
-      take: 80
-    });
+    const chatMessages = (
+      await prisma.chatMessage.findMany({
+        where: { threadId: chatThread.id },
+        orderBy: { createdAt: "desc" },
+        take: 80
+      })
+    ).reverse();
 
     const totalValue = positions.reduce((sum, position) => sum + Number(position.marketValueBase), 0);
 
@@ -287,7 +289,6 @@ export async function loadDashboardData(params: SearchParams) {
       snapshotHistory,
       latestReport,
       reports,
-      runs,
       observations,
       reflections,
       strategy: strategyFromSettings(strategySettings, financialProfile),

@@ -71,11 +71,20 @@ function envFlag(value: string | undefined, defaultValue = false) {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+function envTimeoutMs(value: string | undefined) {
+  if (value === undefined || value === "") {
+    return DEFAULT_TIMEOUT_MS;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+}
+
 export function getLocalLlmConfig(overrides: LocalLlmClientOptions = {}) {
   return {
     baseUrl: overrides.baseUrl ?? process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL,
     model: overrides.model ?? process.env.OLLAMA_MODEL ?? DEFAULT_LOCAL_LLM_MODEL,
-    timeoutMs: overrides.timeoutMs ?? Number(process.env.LLM_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
+    timeoutMs: overrides.timeoutMs ?? envTimeoutMs(process.env.LLM_TIMEOUT_MS),
     allowLan: overrides.allowLan ?? envFlag(process.env.OLLAMA_ALLOW_LAN),
     numPredict: overrides.numPredict,
     temperature: overrides.temperature
