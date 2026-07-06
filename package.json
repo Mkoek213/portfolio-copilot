@@ -1,0 +1,40 @@
+{
+  "name": "portfolio-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "dev:poll": "WATCHPACK_POLLING=true CHOKIDAR_USEPOLLING=true next dev",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "tsx tests/run-tests.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "gate:real": "tsx scripts/real-gate-check.ts",
+    "gmail:auth": "tsx scripts/gmail-mcp-auth.ts",
+    "gmail:mcp:auth": "tsx scripts/gmail-mcp-auth.ts",
+    "gmail:mcp:debug-search": "tsx scripts/gmail-mcp-debug-search.ts",
+    "gmail:oauth:debug": "tsx scripts/gmail-oauth-debug.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.1",
+    "lucide-react": "^0.468.0",
+    "next": "^15.3.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.32",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "eslint": "^9.29.0",
+    "eslint-config-next": "^15.3.4",
+    "prisma": "^6.10.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

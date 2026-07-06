@@ -1,0 +1,434 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountProvider {
+  BINANCE
+  XTB
+  BANK
+  MANUAL
+}
+
+enum AssetClass {
+  CASH
+  ETF_STOCK
+  STOCK
+  BOND
+  CRYPTO
+  COMMODITY
+  OTHER
+}
+
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  NEEDS_REVIEW
+}
+
+enum EventLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+enum ObservationPriority {
+  HIGH
+  MEDIUM
+  LOW
+  COMPLETED
+}
+
+enum CriticVerdict {
+  PASS
+  NEEDS_REVIEW
+  FAIL
+}
+
+
+enum ImportProvider {
+  MBANK_EMAIL
+}
+
+enum ImportSource {
+  GMAIL_MCP
+}
+
+enum ImportStatus {
+  PENDING_REVIEW
+  IMPORTED
+  DUPLICATE
+  FAILED
+  SKIPPED
+}
+
+enum BankTransactionProvider {
+  MBANK
+}
+
+enum BankTransactionSource {
+  EMAIL
+}
+
+enum TransactionDirection {
+  INFLOW
+  OUTFLOW
+}
+
+enum RiskTolerance {
+  LOW
+  MEDIUM
+  HIGH
+  VERY_HIGH
+}
+
+enum ReportType {
+  DAILY
+  MONTHLY
+  ON_DEMAND
+  INVESTMENT
+}
+
+enum TraceStatus {
+  RUNNING
+  OK
+  WARN
+  ERROR
+}
+
+model Account {
+  id           String          @id @default(cuid())
+  provider     AccountProvider
+  name         String
+  baseCurrency String          @default("PLN")
+  readOnly     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  positions    Position[]
+}
+
+model Asset {
+  id         String     @id @default(cuid())
+  symbol     String     @unique
+  name       String
+  assetClass AssetClass
+  currency   String
+  sector     String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  positions  Position[]
+}
+
+model Position {
+  id              String   @id @default(cuid())
+  accountId       String
+  assetId         String
+  quantity        Decimal  @db.Decimal(24, 8)
+  marketPrice     Decimal  @db.Decimal(24, 8)
+  marketValueBase Decimal  @db.Decimal(24, 2)
+  currency        String
+  asOf            DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  asset           Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([assetId])
+  @@index([asOf])
+}
+
+model PortfolioSnapshot {
+  id             String   @id @default(cuid())
+  sourceRunId    String?
+  asOf           DateTime
+  totalValueBase Decimal  @db.Decimal(24, 2)
+  baseCurrency   String   @default("PLN")
+  allocations    Json
+  createdAt      DateTime @default(now())
+}
+
+model StrategySettings {
+  id                       String   @id @default(cuid())
+  resourceId               String   @unique
+  profile                  String   @default("balanced-growth")
+  baseCurrency             String   @default("PLN")
+  targetAllocation         Json
+  maxSinglePositionPercent Decimal  @db.Decimal(5, 2)
+  maxCryptoPercent         Decimal  @db.Decimal(5, 2)
+  minCashPercent           Decimal  @db.Decimal(5, 2)
+  preferredReportLanguage  String   @default("pl")
+  privacyRules             Json
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([resourceId])
+}
+
+
+
+model UserFinancialProfile {
+  id                        String        @id @default(cuid())
+  resourceId                String        @unique
+  age                       Int?
+  lifeStage                 String        @default("student")
+  baseCurrency              String        @default("PLN")
+  investmentHorizonYears    Int           @default(15)
+  riskTolerance             RiskTolerance @default(MEDIUM)
+  monthlyIncome             Decimal?      @db.Decimal(24, 2)
+  monthlyFixedCosts         Decimal?      @db.Decimal(24, 2)
+  monthlyInvestmentCapacity Decimal?      @db.Decimal(24, 2)
+  goals                     Json
+  constraints               Json
+  preferredReportLength     String        @default("short")
+  preferredReportLanguage   String        @default("pl")
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  @@index([resourceId])
+}
+
+model StrategySuggestion {
+  id          String    @id @default(cuid())
+  resourceId  String
+  sourceRunId String?
+  title       String
+  rationale   String
+  status      String    @default("pending")
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  run         AgentRun? @relation(fields: [sourceRunId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId])
+  @@index([sourceRunId])
+  @@index([status])
+}
+
+model ImportBatch {
+  id                 String            @id @default(cuid())
+  provider           ImportProvider    @default(MBANK_EMAIL)
+  source             ImportSource      @default(GMAIL_MCP)
+  gmailMessageId     String
+  gmailThreadId      String?
+  subject            String?
+  sender             String?
+  operationDate      DateTime?
+  receivedAt         DateTime?
+  status             ImportStatus      @default(PENDING_REVIEW)
+  transactionCount   Int               @default(0)
+  parsedTransactions Json?
+  errorMessage       String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  transactions       BankTransaction[]
+
+  @@unique([provider, gmailMessageId, operationDate])
+  @@index([status])
+  @@index([operationDate])
+  @@index([createdAt])
+}
+
+model BankTransaction {
+  id            String                  @id @default(cuid())
+  importBatchId String
+  provider      BankTransactionProvider @default(MBANK)
+  source        BankTransactionSource   @default(EMAIL)
+  operationDate DateTime
+  bookingDate   DateTime?
+  amount        Decimal                 @db.Decimal(24, 2)
+  currency      String                  @default("PLN")
+  direction     TransactionDirection
+  description   String
+  merchant      String?
+  category      String
+  accountLabel  String?
+  balanceAfter  Decimal?                @db.Decimal(24, 2)
+  createdAt     DateTime                @default(now())
+  importBatch   ImportBatch             @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
+
+  @@index([importBatchId])
+  @@index([operationDate])
+  @@index([category])
+  @@index([direction])
+  @@index([merchant])
+}
+
+model AgentRun {
+  id            String              @id @default(cuid())
+  threadId      String
+  resourceId    String
+  status        RunStatus           @default(RUNNING)
+  startedAt     DateTime            @default(now())
+  completedAt   DateTime?
+  inputSummary  Json?
+  outputSummary Json?
+  errorMessage  String?
+  events        RunEvent[]
+  report        Report?
+  observation   ObservationRecord?
+  traceSpans    TraceSpan[]
+  strategySuggestions StrategySuggestion[]
+
+  @@index([threadId])
+  @@index([resourceId])
+  @@index([startedAt])
+}
+
+model RunEvent {
+  id        String     @id @default(cuid())
+  runId     String
+  step      String
+  level     EventLevel @default(INFO)
+  message   String
+  metadata  Json?
+  createdAt DateTime   @default(now())
+  run       AgentRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([step])
+}
+
+model Report {
+  id              String        @id @default(cuid())
+  runId           String        @unique
+  reportType      ReportType    @default(ON_DEMAND)
+  title           String
+  summary         String
+  allocation      Json
+  riskFlags       Json
+  opportunities   Json
+  recommendations Json
+  rebalancingPlan Json
+  unknowns        Json
+  sources         Json
+  criticVerdict   CriticVerdict @default(PASS)
+  markdown        String
+  reporterSource  String        @default("deterministic")
+  reporterModel   String?
+  createdAt       DateTime      @default(now())
+  run             AgentRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+
+
+model ChatThread {
+  id         String        @id @default(cuid())
+  resourceId String
+  title      String
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  messages   ChatMessage[]
+
+  @@index([resourceId])
+  @@index([updatedAt])
+}
+
+model ChatMessage {
+  id        String     @id @default(cuid())
+  threadId  String
+  role      String
+  content   String
+  metadata  Json?
+  createdAt DateTime   @default(now())
+  thread    ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@index([createdAt])
+}
+
+model ObservationRecord {
+  id                       String        @id @default(cuid())
+  runId                    String        @unique
+  threadId                 String
+  resourceId               String
+  dataSourcesUsed          Json
+  missingData              Json
+  portfolioSnapshotSummary Json
+  reportSummary            Json
+  recommendations          Json
+  riskFlags                Json
+  createdAt                DateTime      @default(now())
+  run                      AgentRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  observations             Observation[]
+
+  @@index([threadId])
+  @@index([resourceId])
+}
+
+model Observation {
+  id          String              @id @default(cuid())
+  recordId    String?
+  threadId    String
+  resourceId  String
+  priority    ObservationPriority
+  topic       String
+  content     String
+  status      String              @default("active")
+  sourceLinks Json?
+  createdAt   DateTime            @default(now())
+  record      ObservationRecord?  @relation(fields: [recordId], references: [id], onDelete: SetNull)
+
+  @@index([threadId])
+  @@index([resourceId])
+  @@index([priority])
+  @@index([topic])
+}
+
+model Reflection {
+  id                   String   @id @default(cuid())
+  threadId             String
+  resourceId           String
+  summary              String
+  topics               Json
+  sourceObservationIds Json
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([threadId])
+  @@index([resourceId])
+}
+
+model TraceSpan {
+  id           String      @id @default(cuid())
+  traceId      String
+  parentSpanId String?
+  runId        String?
+  resourceId   String
+  name         String
+  status       TraceStatus @default(RUNNING)
+  level        EventLevel  @default(INFO)
+  input        Json?
+  output       Json?
+  metadata     Json?
+  errorMessage String?
+  startedAt    DateTime    @default(now())
+  endedAt      DateTime?
+  createdAt    DateTime    @default(now())
+  run          AgentRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([traceId])
+  @@index([runId])
+  @@index([resourceId])
+  @@index([name])
+  @@index([startedAt])
+}
+
+model SchedulerState {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  enabled    Boolean  @default(true)
+  timeOfDay  String   @default("08:00")
+  timezone   String   @default("Europe/Warsaw")
+  running    Boolean  @default(false)
+  lastRunAt  DateTime?
+  nextRunAt  DateTime?
+  lastStatus String?
+  lastError  String?
+  updatedAt  DateTime @updatedAt
+}
+

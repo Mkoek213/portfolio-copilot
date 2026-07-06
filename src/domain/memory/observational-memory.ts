@@ -1,0 +1,181 @@
+import type { PrismaClient } from "@prisma/client";
+import type { PortfolioContext, Recommendation, RiskFlag } from "@/domain/portfolio/types";
+import type { ReportDraft } from "@/domain/agents/reporter";
+
+function intEnv(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const REFLECTION_OBSERVATION_THRESHOLD = Math.max(4, Math.floor(intEnv("MEMORY_REFLECTION_TOKEN_THRESHOLD", 40_000) / 5_000));
+
+export async function writeObservationMemory(
+  db: PrismaClient,
+  input: {
+    runId: string;
+    threadId: string;
+    resourceId: string;
+    context: PortfolioContext;
+    report: ReportDraft;
+    recommendations: Recommendation[];
+    riskFlags: RiskFlag[];
+  }
+) {
+  const record = await db.observationRecord.create({
+    data: {
+      runId: input.runId,
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      dataSourcesUsed: input.context.dataSourcesUsed,
+      missingData: input.context.missingData,
+      portfolioSnapshotSummary: {
+        asOf: input.context.asOf.toISOString(),
+        totalValue: input.context.totalValue,
+        baseCurrency: input.context.baseCurrency,
+        allocationByClass: input.context.allocationByClass,
+        spendingSummary: input.context.spendingSummary
+      },
+      reportSummary: {
+        title: input.report.title,
+        summary: input.report.summary,
+        criticVerdict: "stored-after-report-critic"
+      },
+      recommendations: input.recommendations,
+      riskFlags: input.riskFlags
+    }
+  });
+
+  const observationInputs = [
+    {
+      priority: "COMPLETED" as const,
+      topic: "run-completed",
+      content: `Run ${input.runId} zakończył raport ${input.report.title}.`
+    },
+    {
+      priority: "HIGH" as const,
+      topic: "strategy-profile",
+      content: `Profil: ${input.context.strategy.lifeStage}, horyzont ${input.context.strategy.investmentHorizonYears} lat, tolerancja ${input.context.strategy.riskTolerance}, waluta ${input.context.strategy.baseCurrency}.`
+    },
+    {
+      priority: "MEDIUM" as const,
+      topic: "spending-summary",
+      content: `Miesięczne wydatki ${input.context.spendingSummary.monthlyOutflow} ${input.context.baseCurrency}, wpływy ${input.context.spendingSummary.monthlyInflow} ${input.context.baseCurrency}.`
+    },
+    ...input.context.missingData.map((item) => ({
+      priority: "MEDIUM" as const,
+      topic: "missing-data",
+      content: item
+    })),
+    ...input.riskFlags
+      .filter((flag) => flag.level !== "info")
+      .map((flag) => ({
+        priority: "HIGH" as const,
+        topic: flag.topic,
+        content: flag.message
+      }))
+  ];
+
+  await db.observation.createMany({
+    data: observationInputs.map((observation) => ({
+      ...observation,
+      recordId: record.id,
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      sourceLinks: {
+        runId: input.runId,
+        observationRecordId: record.id
+      }
+    }))
+  });
+
+  const reflection = await reflectIfNeeded(db, input.threadId, input.resourceId);
+
+  return { record, reflection };
+}
+
+export async function writeImportObservation(
+  db: PrismaClient,
+  input: {
+    resourceId: string;
+    batchId?: string;
+    topic: string;
+    content: string;
+    priority?: "HIGH" | "MEDIUM" | "LOW" | "COMPLETED";
+  }
+) {
+  const observation = await db.observation.create({
+    data: {
+      threadId: "imports",
+      resourceId: input.resourceId,
+      priority: input.priority ?? "MEDIUM",
+      topic: input.topic,
+      content: input.content,
+      sourceLinks: input.batchId ? { batchId: input.batchId } : undefined
+    }
+  });
+
+  await reflectIfNeeded(db, "imports", input.resourceId);
+  return observation;
+}
+
+export async function writeChatObservation(
+  db: PrismaClient,
+  input: {
+    resourceId: string;
+    threadId: string;
+    userMessage: string;
+    assistantMessage: string;
+  }
+) {
+  const content = `Pytanie: ${input.userMessage.slice(0, 220)} | Odpowiedź: ${input.assistantMessage.slice(0, 320)}`;
+  const observation = await db.observation.create({
+    data: {
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      priority: "LOW",
+      topic: "chat",
+      content,
+      sourceLinks: { threadId: input.threadId }
+    }
+  });
+
+  await reflectIfNeeded(db, input.threadId, input.resourceId);
+  return observation;
+}
+
+export async function reflectIfNeeded(db: PrismaClient, threadId: string, resourceId: string) {
+  const observations = await db.observation.findMany({
+    where: { threadId, resourceId },
+    orderBy: { createdAt: "desc" },
+    take: 50
+  });
+
+  if (observations.length < REFLECTION_OBSERVATION_THRESHOLD) {
+    return null;
+  }
+
+  const latestReflection = await db.reflection.findFirst({
+    where: { threadId, resourceId },
+    orderBy: { createdAt: "desc" }
+  });
+
+  if (latestReflection && observations[0] && latestReflection.createdAt >= observations[0].createdAt) {
+    return null;
+  }
+
+  const grouped = observations.reduce<Record<string, string[]>>((acc, observation) => {
+    acc[observation.topic] = acc[observation.topic] ?? [];
+    acc[observation.topic].push(observation.content);
+    return acc;
+  }, {});
+
+  return db.reflection.create({
+    data: {
+      threadId,
+      resourceId,
+      summary: `Skonsolidowana pamięć z ${observations.length} obserwacji. Najważniejsze tematy: ${Object.keys(grouped).join(", ")}.`,
+      topics: grouped,
+      sourceObservationIds: observations.map((observation) => observation.id)
+    }
+  });
+}
