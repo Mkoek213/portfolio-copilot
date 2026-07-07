@@ -25,6 +25,7 @@ import {
 import { confirmImportBatch, createImportDedupeKey, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
+import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -171,6 +172,12 @@ function mbankFixture() {
 function mbankStatementRowsFixture(): StatementRow[] {
   return JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/mbank-statement-rows-anon.json"), "utf8"));
 }
+
+// Offline categorizer for sync tests: mirrors the deterministic keyword seed so
+// tests never depend on a running local LLM.
+const deterministicCategorize = async (
+  transactions: Array<{ description: string; merchant: string | null; direction: "INFLOW" | "OUTFLOW" }>
+) => transactions.map((transaction) => categorizeMbankTransaction(`${transaction.merchant ?? ""} ${transaction.description}`, transaction.direction));
 
 function toBase64Url(value: string) {
   return Buffer.from(value, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -1103,7 +1110,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: mbankFixture() })
       };
 
-      const firstSync = await syncMbankGmail(db, { adapter, traceId: "test-sync" });
+      const firstSync = await syncMbankGmail(db, { adapter, traceId: "test-sync", categorize: deterministicCategorize });
       assert.equal(firstSync.created, 1);
       assert.equal(state.batches.length, 1);
       assert.equal(state.batches[0]?.status, "PENDING_REVIEW");
@@ -1126,7 +1133,7 @@ Numer referencyjny maila: X.
       assert.equal(confirmedAgain.created, 0);
       assert.equal(state.transactions.length, 1);
 
-      const secondSync = await syncMbankGmail(db, { adapter, traceId: "test-sync-2" });
+      const secondSync = await syncMbankGmail(db, { adapter, traceId: "test-sync-2", categorize: deterministicCategorize });
       assert.equal(secondSync.duplicates, 1);
       assert.equal(state.batches.length, 1);
     }
@@ -1170,6 +1177,41 @@ Numer referencyjny maila: X.
       brokenRow!.balance = "81,00";
 
       assert.throws(() => parseMbankStatement(rows), /balance chain mismatch/i);
+    }
+  },
+  {
+    name: "LLM categorizer applies valid model answers and keeps deterministic seed otherwise",
+    async run() {
+      const transactions = [
+        { description: "ZAKUP PRZY UŻYCIU KARTY; SALON FRYZJERSKI ELEGANCJA", merchant: "SALON FRYZJERSKI ELEGANCJA", direction: "OUTFLOW" as const, amount: 80, category: "other" as const },
+        { description: "ZAKUP PRZY UŻYCIU KARTY; ZABKA Z123 KRAKOW PL", merchant: "ZABKA Z123 KRAKOW PL", direction: "OUTFLOW" as const, amount: 12, category: "food" as const },
+        { description: "BLIK ZAKUP E-COMMERCE; STEAM GAMES", merchant: "STEAM GAMES", direction: "OUTFLOW" as const, amount: 60, category: "shopping" as const }
+      ];
+
+      // The model recognises the hair salon (which no keyword covers) and returns
+      // a Polish label for row 3; it omits row 2, which keeps its parser category.
+      const chat: LlmChatFn = async () => ({
+        success: true,
+        model: "test",
+        content: JSON.stringify({ items: [{ i: 1, kategoria: "health" }, { i: 3, kategoria: "rozrywka" }] })
+      });
+
+      const categories = await categorizeTransactionsWithLlm(transactions, { chat });
+      assert.deepEqual(categories, ["health", "food", "entertainment"]);
+    }
+  },
+  {
+    name: "LLM categorizer falls back to deterministic categories when the model fails",
+    async run() {
+      const transactions = [
+        { description: "ZAKUP PRZY UŻYCIU KARTY; ORLEN STACJA 12", merchant: "ORLEN STACJA 12", direction: "OUTFLOW" as const, amount: 250, category: "transport" as const },
+        { description: "PRZELEW ZEWNĘTRZNY PRZYCHODZĄCY; ANNA NOWAK", merchant: "ANNA NOWAK", direction: "INFLOW" as const, amount: 300, category: "people_transfers" as const }
+      ];
+
+      const chat: LlmChatFn = async () => ({ success: false, error: { code: "network_error", message: "offline" } });
+
+      const categories = await categorizeTransactionsWithLlm(transactions, { chat });
+      assert.deepEqual(categories, ["transport", "people_transfers"]);
     }
   },
   {
@@ -1293,7 +1335,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: "mBank\nData: 02.07.2026\nTo jest powiadomienie e-mail bez szczegolow transakcji." })
       };
 
-      const sync = await syncMbankGmail(db, { adapter, traceId: "skip-notification-sync" });
+      const sync = await syncMbankGmail(db, { adapter, traceId: "skip-notification-sync", categorize: deterministicCategorize });
       assert.equal(sync.skipped, 1);
       assert.equal(sync.failed, 0);
       assert.equal(state.batches.length, 1);
@@ -1318,7 +1360,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: "mBank message without operation date" })
       };
 
-      const failedSync = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "retry-sync" });
+      const failedSync = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "retry-sync", categorize: deterministicCategorize });
       assert.equal(failedSync.failed, 1);
       assert.equal(state.batches.length, 1);
       assert.equal(state.batches[0]?.status, "FAILED");

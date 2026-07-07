@@ -9,6 +9,7 @@ import {
 } from "./gmail-mcp-adapter";
 import { MbankParseError, parseMbankEmail, type ParsedMbankTransaction } from "./mbank-parser";
 import { MbankStatementParseError, parseMbankStatementPdf, type ParsedMbankStatement } from "./mbank-statement-parser";
+import { categorizeTransactionsWithLlm, type CategorizableTransaction } from "./llm-categorizer";
 import { EXPENSE_CATEGORIES, isExpenseCategory } from "@/domain/portfolio/categories";
 import { recordTraceWarning, traceStep } from "@/domain/tracing/local-tracing";
 
@@ -28,6 +29,34 @@ type GmailAdapter = {
 };
 
 type GmailReadAdapter = Pick<GmailAdapter, "readGmailMessage">;
+
+// Assigns a category to each parsed transaction. Defaults to the local LLM
+// (with a deterministic keyword fallback); injectable so tests stay offline.
+export type CategorizeTransactions = (transactions: CategorizableTransaction[]) => Promise<ParsedMbankTransaction["category"][]>;
+
+function toCategorizable(transaction: ParsedMbankTransaction): CategorizableTransaction {
+  return {
+    description: transaction.description,
+    merchant: transaction.merchant,
+    direction: transaction.direction,
+    amount: transaction.amount,
+    category: transaction.category
+  };
+}
+
+async function applyCategories<T extends { transactions: ParsedMbankTransaction[] }>(parsed: T, categorize: CategorizeTransactions): Promise<T> {
+  if (parsed.transactions.length === 0) {
+    return parsed;
+  }
+
+  const categories = await categorize(parsed.transactions.map(toCategorizable));
+  const transactions = parsed.transactions.map((transaction, index) => ({
+    ...transaction,
+    category: categories[index] ?? transaction.category
+  }));
+
+  return { ...parsed, transactions };
+}
 
 export type MbankImportSyncResult = {
   status: "unavailable" | "no_new_messages" | "completed";
@@ -319,7 +348,8 @@ async function processStatementMessage(
   message: GmailMessageBody,
   adapter: Pick<GmailAdapter, "readGmailPdfAttachments">,
   traceId: string,
-  password: string | undefined
+  password: string | undefined,
+  categorize: CategorizeTransactions
 ) {
   const readPdfAttachments = adapter.readGmailPdfAttachments;
 
@@ -339,19 +369,23 @@ async function processStatementMessage(
   const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "mbank-statement-parser", input: { id: message.id } }, () =>
     parseMbankStatementPdf(pdf.data, password)
   );
+  const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
+    applyCategories(parsed, categorize)
+  );
 
   return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
-    createPendingStatementBatch(db, message, parsed)
+    createPendingStatementBatch(db, message, categorized)
   );
 }
 
 export async function syncMbankGmail(
   db: PrismaClient,
-  options: { adapter?: GmailAdapter; traceId?: string; statementPassword?: string } = {}
+  options: { adapter?: GmailAdapter; traceId?: string; statementPassword?: string; categorize?: CategorizeTransactions } = {}
 ): Promise<MbankImportSyncResult> {
   const adapter = options.adapter ?? { searchMbankMessages, readGmailMessage, readGmailPdfAttachments };
   const traceId = options.traceId ?? `gmail-sync-${Date.now()}`;
   const statementPassword = options.statementPassword ?? statementPasswordFromEnv();
+  const categorize = options.categorize ?? ((transactions) => categorizeTransactionsWithLlm(transactions));
 
   let messages: GmailMessageSummary[];
 
@@ -397,7 +431,7 @@ export async function syncMbankGmail(
       );
 
       const result = isStatementMessage(fullMessage)
-        ? await processStatementMessage(db, fullMessage, adapter, traceId, statementPassword)
+        ? await processStatementMessage(db, fullMessage, adapter, traceId, statementPassword, categorize)
         : await (async () => {
             const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "mbank-parser", input: { id: message.id } }, () =>
               parseMbankEmail(fullMessage.bodyText)
@@ -409,8 +443,12 @@ export async function syncMbankGmail(
               return { created: false as const, batch: null, covered: true as const };
             }
 
+            const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
+              applyCategories(parsed, categorize)
+            );
+
             return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
-              createPendingBatch(db, fullMessage, parsed)
+              createPendingBatch(db, fullMessage, categorized)
             );
           })();
 
