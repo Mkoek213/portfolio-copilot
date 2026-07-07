@@ -92,56 +92,57 @@ function monthKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function cashflowMonthRanges(now: Date, months: number) {
+  return Array.from({ length: months }, (_, index) => {
+    const offset = months - index - 1;
+    const start = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    const end = new Date(now.getFullYear(), now.getMonth() - offset + 1, 1);
+
+    return { month: monthKey(start), start, end };
+  });
+}
+
 function buildMonthlyCashflow(
-  transactions: Array<{ operationDate: Date; amount: Prisma.Decimal; direction: "INFLOW" | "OUTFLOW" }>,
-  now: Date,
-  months: number
+  monthRanges: Array<{ month: string }>,
+  groupedTotals: Array<Array<{ direction: "INFLOW" | "OUTFLOW"; _sum: { amount: Prisma.Decimal | null } }>>
 ): MonthlyCashflow[] {
-  const series: MonthlyCashflow[] = [];
+  return monthRanges.map((range, index) => {
+    const bucket: MonthlyCashflow = { month: range.month, inflow: 0, outflow: 0 };
 
-  for (let offset = months - 1; offset >= 0; offset -= 1) {
-    const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
-    series.push({ month: monthKey(date), inflow: 0, outflow: 0 });
-  }
+    for (const group of groupedTotals[index] ?? []) {
+      const amount = Number(group._sum.amount ?? 0);
 
-  const byMonth = new Map(series.map((item) => [item.month, item]));
-
-  for (const transaction of transactions) {
-    const bucket = byMonth.get(monthKey(transaction.operationDate));
-
-    if (!bucket) {
-      continue;
+      if (group.direction === "INFLOW") {
+        bucket.inflow += amount;
+      } else {
+        bucket.outflow += amount;
+      }
     }
 
-    if (transaction.direction === "INFLOW") {
-      bucket.inflow += Number(transaction.amount);
-    } else {
-      bucket.outflow += Number(transaction.amount);
-    }
-  }
-
-  return series;
+    return bucket;
+  });
 }
 
 function buildCategoryTotals(
-  transactions: Array<{ amount: Prisma.Decimal; direction: "INFLOW" | "OUTFLOW"; category: string }>,
+  directionTotals: Array<{ direction: "INFLOW" | "OUTFLOW"; _sum: { amount: Prisma.Decimal | null } }>,
+  categoryTotals: Array<{ category: string; _sum: { amount: Prisma.Decimal | null } }>,
   maxCategories = 6
 ): { totals: CategoryTotal[]; monthlyOutflow: number; monthlyInflow: number } {
-  const totalsMap = new Map<string, number>();
   let monthlyOutflow = 0;
   let monthlyInflow = 0;
 
-  for (const transaction of transactions) {
-    if (transaction.direction === "INFLOW") {
-      monthlyInflow += Number(transaction.amount);
+  for (const group of directionTotals) {
+    const amount = Number(group._sum.amount ?? 0);
+
+    if (group.direction === "INFLOW") {
+      monthlyInflow += amount;
       continue;
     }
 
-    monthlyOutflow += Number(transaction.amount);
-    totalsMap.set(transaction.category, (totalsMap.get(transaction.category) ?? 0) + Number(transaction.amount));
+    monthlyOutflow += amount;
   }
 
-  const sorted = Array.from(totalsMap.entries()).sort((a, b) => b[1] - a[1]);
+  const sorted = categoryTotals.map((group) => [group.category, Number(group._sum.amount ?? 0)] as const).sort((a, b) => b[1] - a[1]);
   const top = sorted.slice(0, maxCategories);
   const rest = sorted.slice(maxCategories);
   const restValue = rest.reduce((sum, [, value]) => sum + value, 0);
@@ -169,7 +170,8 @@ export async function loadDashboardData(params: SearchParams) {
   try {
     const now = new Date();
     const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const cashflowStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const monthRanges = cashflowMonthRanges(now, 6);
 
     const [
       positions,
@@ -187,7 +189,9 @@ export async function loadDashboardData(params: SearchParams) {
       traceSpans,
       runCount,
       observationCount,
-      cashflowTransactions,
+      monthlyCashflowGroups,
+      currentMonthDirectionTotals,
+      currentMonthCategoryTotals,
       localLlmHealth,
       gmailHealth,
       langfuseStatus,
@@ -211,11 +215,24 @@ export async function loadDashboardData(params: SearchParams) {
       prisma.traceSpan.findMany({ orderBy: { startedAt: "desc" }, take: 16 }),
       prisma.agentRun.count(),
       prisma.observation.count(),
-      prisma.bankTransaction.findMany({
-        where: { operationDate: { gte: cashflowStart } },
-        select: { operationDate: true, amount: true, direction: true, category: true },
-        orderBy: { operationDate: "asc" },
-        take: 5000
+      Promise.all(
+        monthRanges.map((range) =>
+          prisma.bankTransaction.groupBy({
+            by: ["direction"],
+            where: { operationDate: { gte: range.start, lt: range.end } },
+            _sum: { amount: true }
+          })
+        )
+      ),
+      prisma.bankTransaction.groupBy({
+        by: ["direction"],
+        where: { operationDate: { gte: currentMonthStart, lt: currentMonthEnd } },
+        _sum: { amount: true }
+      }),
+      prisma.bankTransaction.groupBy({
+        by: ["category"],
+        where: { operationDate: { gte: currentMonthStart, lt: currentMonthEnd }, direction: "OUTFLOW" },
+        _sum: { amount: true }
       }),
       checkLocalLlmHealth(),
       checkGmailMcpHealth(),
@@ -260,9 +277,8 @@ export async function loadDashboardData(params: SearchParams) {
 
     const allocationByClass = snapshotAllocation.length > 0 ? snapshotAllocation : liveAllocation;
 
-    const monthTransactions = cashflowTransactions.filter((transaction) => transaction.operationDate >= currentMonthStart);
-    const { totals: topCategories, monthlyOutflow, monthlyInflow } = buildCategoryTotals(monthTransactions);
-    const monthlyCashflow = buildMonthlyCashflow(cashflowTransactions, now, 6);
+    const { totals: topCategories, monthlyOutflow, monthlyInflow } = buildCategoryTotals(currentMonthDirectionTotals, currentMonthCategoryTotals);
+    const monthlyCashflow = buildMonthlyCashflow(monthRanges, monthlyCashflowGroups);
 
     const filteredInflow = transactions.filter((transaction) => transaction.direction === "INFLOW").reduce((sum, item) => sum + Number(item.amount), 0);
     const filteredOutflow = transactions.filter((transaction) => transaction.direction === "OUTFLOW").reduce((sum, item) => sum + Number(item.amount), 0);
