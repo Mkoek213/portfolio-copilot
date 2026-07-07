@@ -235,15 +235,17 @@ export async function confirmImportAction(_previousState: ActionResult, formData
   try {
     const batchId = formString(formData, "batchId");
     const confirmed = await confirmImportBatch(prisma, batchId);
+    const superseded = "superseded" in confirmed ? confirmed.superseded ?? 0 : 0;
+    const supersededNote = superseded > 0 ? ` Replaced ${superseded} transaction(s) already booked in this period.` : "";
     await writeImportObservation(prisma, {
       resourceId: LOCAL_RESOURCE_ID,
       batchId,
       topic: "import-confirmed",
-      content: `Confirmed import batch ${batchId}; created ${confirmed.created} transaction(s).`,
+      content: `Confirmed import batch ${batchId}; created ${confirmed.created} transaction(s).${supersededNote}`,
       priority: "COMPLETED"
     });
     revalidatePath("/");
-    return result("success", "Import confirmed.", `Created ${confirmed.created} transaction(s).`);
+    return result("success", "Import confirmed.", `Created ${confirmed.created} transaction(s).${supersededNote}`);
   } catch (error) {
     return result("error", "Import was not confirmed.", error instanceof Error ? error.message : "Unknown import error.");
   }

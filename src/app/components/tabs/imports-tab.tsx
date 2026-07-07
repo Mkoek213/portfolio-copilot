@@ -26,16 +26,25 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
             <StatusChip tone={data.gmailHealth.available ? "good" : data.gmailHealth.enabled ? "warn" : "muted"} label={`Gmail ${gmailState}`} />
             <strong>{data.gmailHealth.baseUrl}</strong>
           </div>
-          <p>Manual Sync reads at most the configured single-message window. OAuth and Gmail access stay user-run outside the app.</p>
+          <p>Manual Sync reads mBank daily notifications and monthly statement PDFs. A confirmed statement is authoritative for its month and replaces any daily entries in that period. OAuth and Gmail access stay user-run outside the app.</p>
         </div>
         <SyncMbankControl />
         <div className="import-list">
-          {data.importBatches.map((batch) => (
+          {data.importBatches.map((batch) => {
+            const isStatement = batch.provider === "MBANK_STATEMENT";
+            const periodLabel =
+              isStatement && batch.periodStart && batch.periodEnd
+                ? `${formatDate(batch.periodStart)} - ${formatDate(batch.periodEnd)}`
+                : formatDate(batch.operationDate);
+
+            return (
             <article className="import-card" key={batch.id}>
               <div className="import-card-head">
                 <div>
                   <strong>{batch.subject ?? batch.gmailMessageId}</strong>
-                  <span className="cell-sub">{formatDate(batch.operationDate)} · {batch.transactionCount} transaction{batch.transactionCount === 1 ? "" : "s"}</span>
+                  <span className="cell-sub">
+                    {isStatement ? "Statement " : ""}{periodLabel} · {batch.transactionCount} transaction{batch.transactionCount === 1 ? "" : "s"}
+                  </span>
                 </div>
                 <StatusChip tone={importStatusTone(batch.status)} label={batch.status.toLowerCase().replace("_", " ")} />
               </div>
@@ -53,7 +62,8 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
                 </div>
               ) : null}
             </article>
-          ))}
+            );
+          })}
           {data.importBatches.length === 0 ? <p className="empty-state">No import batches yet.</p> : null}
         </div>
       </div>

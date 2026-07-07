@@ -51,7 +51,7 @@ export function TransactionsTab({ data, params }: { data: DashboardData; params:
                     <td>
                       <strong>{transaction.merchant ?? transaction.description}</strong>
                       <span className="cell-sub">{transaction.description}</span>
-                      <span className="cell-sub cell-faint">mBank email · batch {shortId(transaction.importBatchId)}</span>
+                      <span className="cell-sub cell-faint">{transaction.source === "STATEMENT" ? "mBank statement" : "mBank email"} · batch {shortId(transaction.importBatchId)}</span>
                     </td>
                     <td className="cell-category">
                       <TransactionCategoryControl transactionId={transaction.id} category={transaction.category} />

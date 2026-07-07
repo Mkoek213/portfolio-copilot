@@ -53,6 +53,7 @@ enum CriticVerdict {
 
 enum ImportProvider {
   MBANK_EMAIL
+  MBANK_STATEMENT
 }
 
 enum ImportSource {
@@ -73,6 +74,7 @@ enum BankTransactionProvider {
 
 enum BankTransactionSource {
   EMAIL
+  STATEMENT
 }
 
 enum TransactionDirection {
@@ -219,6 +221,8 @@ model ImportBatch {
   sender             String?
   operationDate      DateTime?
   receivedAt         DateTime?
+  periodStart        DateTime?
+  periodEnd          DateTime?
   status             ImportStatus      @default(PENDING_REVIEW)
   transactionCount   Int               @default(0)
   parsedTransactions Json?
