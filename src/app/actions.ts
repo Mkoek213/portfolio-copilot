@@ -17,6 +17,9 @@ export type ActionResult = {
   message: string;
   detail?: string;
   timestamp?: number;
+  // True when an error result still wrote data (e.g. a persisted chat exchange),
+  // so the client must reload instead of treating the submission as unsent.
+  persisted?: boolean;
 };
 
 function result(status: ActionResult["status"], message: string, detail?: string): ActionResult {
@@ -335,7 +338,7 @@ export async function sendChatMessageAction(_previousState: ActionResult, formDa
     revalidatePath("/");
 
     if (!chat.success) {
-      return result("error", "Local chat failed.", chat.error.message);
+      return { ...result("error", "Local chat failed.", chat.error.message), persisted: true };
     }
 
     return result("success", "Message sent.", `Answered with ${chat.model}.`);

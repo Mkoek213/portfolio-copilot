@@ -1,0 +1,18 @@
+mBank S.A.
+Bankowosc Detaliczna
+Skrytka Pocztowa 0000
+00-000 Miasto
+
+Szanowni Panstwo,
+
+informujemy o operacji na Panstwa rachunku.
+
+Data operacji: 02.07.2026
+Rodzaj operacji: Płatność kartą
+Kwota operacji: -42,50 PLN
+Odbiorca: BIEDRONKA ANON STORE 0000
+Numer rachunku: eKonto 12 **** **** **** **** 3456
+Saldo po operacji: 1 234,56 PLN
+
+Ta wiadomosc zostala wygenerowana automatycznie, prosimy na nia nie odpowiadac.
+Numer referencyjny maila: ANON-REF-0000000
