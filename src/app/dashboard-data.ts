@@ -102,10 +102,26 @@ function cashflowMonthRanges(now: Date, months: number) {
   });
 }
 
-function buildMonthlyCashflow(
-  monthRanges: Array<{ month: string }>,
-  groupedTotals: Array<Array<{ direction: "INFLOW" | "OUTFLOW"; _sum: { amount: Prisma.Decimal | null } }>>
-): MonthlyCashflow[] {
+type DirectionTotals = Array<{ direction: "INFLOW" | "OUTFLOW"; _sum: { amount: Prisma.Decimal | null } }>;
+
+function sumByDirection(directionTotals: DirectionTotals) {
+  let inflow = 0;
+  let outflow = 0;
+
+  for (const group of directionTotals) {
+    const amount = Number(group._sum.amount ?? 0);
+
+    if (group.direction === "INFLOW") {
+      inflow += amount;
+    } else {
+      outflow += amount;
+    }
+  }
+
+  return { inflow, outflow };
+}
+
+function buildMonthlyCashflow(monthRanges: Array<{ month: string }>, groupedTotals: DirectionTotals[]): MonthlyCashflow[] {
   return monthRanges.map((range, index) => {
     const bucket: MonthlyCashflow = { month: range.month, inflow: 0, outflow: 0 };
 
@@ -124,23 +140,11 @@ function buildMonthlyCashflow(
 }
 
 function buildCategoryTotals(
-  directionTotals: Array<{ direction: "INFLOW" | "OUTFLOW"; _sum: { amount: Prisma.Decimal | null } }>,
+  directionTotals: DirectionTotals,
   categoryTotals: Array<{ category: string; _sum: { amount: Prisma.Decimal | null } }>,
   maxCategories = 6
 ): { totals: CategoryTotal[]; monthlyOutflow: number; monthlyInflow: number } {
-  let monthlyOutflow = 0;
-  let monthlyInflow = 0;
-
-  for (const group of directionTotals) {
-    const amount = Number(group._sum.amount ?? 0);
-
-    if (group.direction === "INFLOW") {
-      monthlyInflow += amount;
-      continue;
-    }
-
-    monthlyOutflow += amount;
-  }
+  const { inflow: monthlyInflow, outflow: monthlyOutflow } = sumByDirection(directionTotals);
 
   const sorted = categoryTotals.map((group) => [group.category, Number(group._sum.amount ?? 0)] as const).sort((a, b) => b[1] - a[1]);
   const top = sorted.slice(0, maxCategories);
@@ -192,6 +196,8 @@ export async function loadDashboardData(params: SearchParams) {
       monthlyCashflowGroups,
       currentMonthDirectionTotals,
       currentMonthCategoryTotals,
+      filteredDirectionTotals,
+      filteredCount,
       localLlmHealth,
       gmailHealth,
       langfuseStatus,
@@ -234,6 +240,12 @@ export async function loadDashboardData(params: SearchParams) {
         where: { operationDate: { gte: currentMonthStart, lt: currentMonthEnd }, direction: "OUTFLOW" },
         _sum: { amount: true }
       }),
+      prisma.bankTransaction.groupBy({
+        by: ["direction"],
+        where: transactionWhere,
+        _sum: { amount: true }
+      }),
+      prisma.bankTransaction.count({ where: transactionWhere }),
       checkLocalLlmHealth(),
       checkGmailMcpHealth(),
       checkLocalLangfuseStatus(),
@@ -280,8 +292,7 @@ export async function loadDashboardData(params: SearchParams) {
     const { totals: topCategories, monthlyOutflow, monthlyInflow } = buildCategoryTotals(currentMonthDirectionTotals, currentMonthCategoryTotals);
     const monthlyCashflow = buildMonthlyCashflow(monthRanges, monthlyCashflowGroups);
 
-    const filteredInflow = transactions.filter((transaction) => transaction.direction === "INFLOW").reduce((sum, item) => sum + Number(item.amount), 0);
-    const filteredOutflow = transactions.filter((transaction) => transaction.direction === "OUTFLOW").reduce((sum, item) => sum + Number(item.amount), 0);
+    const { inflow: filteredInflow, outflow: filteredOutflow } = sumByDirection(filteredDirectionTotals);
 
     const configuredLocalLlmModel = getLocalLlmConfig().model;
     const localLlmModelPresets = LOCAL_LLM_MODEL_PRESETS.some((preset) => preset.model === configuredLocalLlmModel)
@@ -323,6 +334,7 @@ export async function loadDashboardData(params: SearchParams) {
       topCategories,
       filteredInflow,
       filteredOutflow,
+      filteredCount,
       localLlmHealth,
       gmailHealth,
       langfuseStatus,

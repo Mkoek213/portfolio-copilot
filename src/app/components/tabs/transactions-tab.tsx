@@ -17,7 +17,9 @@ export function TransactionsTab({ data, params }: { data: DashboardData; params:
       <div className="panel">
         <PanelHeading
           title="Transactions"
-          sub={`${data.transactions.length} rows · ${formatMoney(data.filteredInflow)} inflow · ${formatMoney(data.filteredOutflow)} outflow`}
+          sub={`${data.filteredCount} rows · ${formatMoney(data.filteredInflow)} inflow · ${formatMoney(data.filteredOutflow)} outflow${
+            data.filteredCount > data.transactions.length ? ` · showing latest ${data.transactions.length}` : ""
+          }`}
         />
         <form className="filter-grid" action="/" method="get">
           <input type="hidden" name="tab" value="transactions" />

@@ -48,11 +48,18 @@ export function ChatPanel({
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (state.status === "success") {
-      setDraft("");
-      router.refresh();
+    if (state.status === "idle") {
+      return;
     }
-  }, [router, state.status, state.timestamp]);
+
+    // A failed exchange can still be persisted (user message + error reply), so
+    // clear the draft to prevent Enter from re-sending a duplicate.
+    if (state.status === "success" || state.persisted) {
+      setDraft("");
+    }
+
+    router.refresh();
+  }, [router, state.status, state.timestamp, state.persisted]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
