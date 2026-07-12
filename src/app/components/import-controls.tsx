@@ -5,12 +5,12 @@ import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 import { EXPENSE_CATEGORY_OPTIONS } from "@/domain/portfolio/categories";
-import { confirmImportAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
+import { confirmImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
-type ImportActionKind = "sync" | "confirm" | "reject" | "retry";
+type ImportActionKind = "sync" | "confirm" | "reject" | "retry" | "reject-all";
 
 function hasKnownCategory(category: string) {
   return EXPENSE_CATEGORY_OPTIONS.some((option) => option.value === category);
@@ -42,7 +42,7 @@ function Button({ kind, children }: { kind: ImportActionKind; children: React.Re
   const Icon = pending ? Loader2 : kind === "sync" ? RefreshCw : kind === "confirm" ? Check : kind === "retry" ? RotateCcw : X;
 
   return (
-    <button className={kind === "reject" ? "ghost-button" : "secondary-button"} type="submit" disabled={pending} aria-busy={pending}>
+    <button className={kind === "reject" || kind === "reject-all" ? "ghost-button" : "secondary-button"} type="submit" disabled={pending} aria-busy={pending}>
       <Icon className={pending ? "spin" : undefined} size={18} aria-hidden="true" />
       {children}
     </button>
@@ -63,6 +63,26 @@ export function SyncMbankControl() {
     <div className="action-stack inline-action">
       <form action={action}>
         <Button kind="sync">Sync now</Button>
+      </form>
+      <ActionStatus state={state} />
+    </div>
+  );
+}
+
+export function RejectAllPendingImportsControl() {
+  const [state, action] = useActionState(rejectAllPendingImportsAction, initialState);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (state.status === "success") {
+      router.refresh();
+    }
+  }, [router, state.status, state.timestamp]);
+
+  return (
+    <div className="action-stack inline-action">
+      <form action={action}>
+        <Button kind="reject-all">Reject all pending</Button>
       </form>
       <ActionStatus state={state} />
     </div>
