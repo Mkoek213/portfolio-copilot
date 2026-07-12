@@ -28,17 +28,71 @@ export class MbankParseError extends Error {
 }
 
 const CATEGORY_KEYWORDS: Array<{ category: ExpenseCategory; keywords: string[] }> = [
-  { category: "food", keywords: ["biedronka", "lidl", "zabka", "żabka", "carrefour", "kaufland", "spożyw", "restaurant", "restaur", "glovo", "wolt"] },
+  {
+    category: "food",
+    keywords: [
+      "biedronka",
+      "lidl",
+      "zabka",
+      "żabka",
+      "carrefour",
+      "kaufland",
+      "auchan",
+      "aldi",
+      "dino",
+      "stokrotka",
+      "delikates",
+      "piekarnia",
+      "cukiernia",
+      "spożyw",
+      "restaurant",
+      "restaur",
+      "mcdonald",
+      "kfc",
+      "burger",
+      "pizz",
+      "kebab",
+      "good lood",
+      "glovo",
+      "wolt",
+      "pyszne"
+    ]
+  },
   { category: "housing", keywords: ["czynsz", "rent", "mieszkanie", "energia", "prąd", "gaz", "woda", "internet dom"] },
-  { category: "transport", keywords: ["uber", "bolt", "orlen", "bp ", "shell", "paliw", "bilet", "ztm", "pkp", "koleje"] },
-  { category: "education", keywords: ["kurs", "szko", "uczeln", "udemy", "coursera", "book", "książ"] },
+  {
+    category: "transport",
+    keywords: [
+      "uber",
+      "bolt",
+      "orlen",
+      "bp ",
+      "shell",
+      "circle k",
+      "lotos",
+      "moya",
+      "paliw",
+      "bilet",
+      "ztm",
+      "pkp",
+      "koleje",
+      "koleo",
+      "intercity",
+      "jakdojade",
+      "flixbus",
+      "regiojet",
+      "e-podroznik",
+      "parking",
+      "mpk"
+    ]
+  },
+  { category: "education", keywords: ["kurs", "szko", "uczeln", "udemy", "coursera", "książ"] },
   { category: "subscriptions", keywords: ["netflix", "spotify", "youtube", "openai", "apple.com/bill", "subskry", "abonament"] },
   { category: "health", keywords: ["apteka", "lekarz", "medic", "luxmed", "enel", "zdrow"] },
-  { category: "entertainment", keywords: ["kino", "cinema", "steam", "playstation", "xbox", "teatr", "event"] },
+  { category: "entertainment", keywords: ["kino", "cinema", "steam", "playstation", "xbox", "teatr", "event", "termy", "spa"] },
   { category: "investments", keywords: ["xtb", "binance", "makler", "broker", "inwest", "etf", "giełd"] },
   { category: "shopping", keywords: ["allegro", "amazon", "zalando", "media expert", "rtv", "euro.com", "sklep", "zakup", "zakupy"] },
-  { category: "income", keywords: ["wynagrodzenie", "salary", "przelew przychodzący", "umowa", "faktura"] },
-  { category: "fees", keywords: ["prowizja", "opłata", "oplata", "fee", "pakiet"] }
+  { category: "income", keywords: ["wynagrodzenie", "salary", "przelew przychodzący", "umowa", "faktura", "nagroda", "stypend"] },
+  { category: "fees", keywords: ["prowizja", "opłata", "oplata", "fee", "pakiet", "ubezpiecz", "polisa", "uniqa", "generali", "hestia"] }
 ];
 
 function normalizeText(value: string) {

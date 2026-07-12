@@ -43,6 +43,7 @@ type LocalLlmClientOptions = {
   allowLan?: boolean;
   numPredict?: number;
   temperature?: number;
+  format?: "json";
 };
 
 type OllamaChatResponse = {
@@ -87,7 +88,8 @@ export function getLocalLlmConfig(overrides: LocalLlmClientOptions = {}) {
     timeoutMs: overrides.timeoutMs ?? envTimeoutMs(process.env.LLM_TIMEOUT_MS),
     allowLan: overrides.allowLan ?? envFlag(process.env.OLLAMA_ALLOW_LAN),
     numPredict: overrides.numPredict,
-    temperature: overrides.temperature
+    temperature: overrides.temperature,
+    format: overrides.format
   };
 }
 
@@ -180,6 +182,7 @@ export async function chatWithLocalLlm(
           model: config.model,
           messages,
           stream: false,
+          ...(config.format ? { format: config.format } : {}),
           options: {
             ...(config.numPredict ? { num_predict: config.numPredict } : {}),
             ...(config.temperature !== undefined ? { temperature: config.temperature } : {})

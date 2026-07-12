@@ -1,0 +1,19 @@
+[
+  { "date": null, "desc": "Wyciąg z rachunku eKonto za okres od 01-06-2026 do 30-06-2026", "amount": null, "balance": null },
+  { "date": "Nr rachunku", "desc": "00 0000 0000 0000 0000 0000 0000", "amount": null, "balance": null },
+  { "date": "Uznania", "desc": "2", "amount": "250,00", "balance": null },
+  { "date": "Obciążenia", "desc": "2", "amount": "-30,00", "balance": null },
+  { "date": null, "desc": "Saldo początkowe: 100,00", "amount": null, "balance": null },
+  { "date": "01-06-2026", "desc": "ZAKUP PRZY UŻYCIU KARTY", "amount": "-20,00", "balance": "80,00" },
+  { "date": "01-06-2026", "desc": "DATA TRANSAKCJI: 2026-05-31", "amount": null, "balance": null },
+  { "date": null, "desc": "ZABKA Z0000 K.1 KRAKOW PL -20,00 PLN -20,00 PLN0000 XXXX XXXX 0000", "amount": null, "balance": null },
+  { "date": "05-06-2026", "desc": "PRZELEW ZEWNĘTRZNY PRZYCHODZĄCY", "amount": "50,00", "balance": "130,00" },
+  { "date": "05-06-2026", "desc": "JAN KOWALSKI UL. TESTOWA 1 00-001 WARSZAWA", "amount": null, "balance": null },
+  { "date": null, "desc": "ZWROT ZA OBIAD", "amount": null, "balance": null },
+  { "date": "10-06-2026", "desc": "BLIK ZAKUP E-COMMERCE", "amount": "-10,00", "balance": "120,00" },
+  { "date": "10-06-2026", "desc": "ALLEGRO.PL", "amount": null, "balance": null },
+  { "date": "20-06-2026", "desc": "PRZELEW ZEWNĘTRZNY PRZYCHODZĄCY", "amount": "200,00", "balance": "320,00" },
+  { "date": "20-06-2026", "desc": "TESTOWA SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ UL. PRZYKŁADOWA 2 00-002 WARSZAWA", "amount": null, "balance": null },
+  { "date": null, "desc": "WYNAGRODZENIE", "amount": null, "balance": null },
+  { "date": null, "desc": "Saldo końcowe: 320,00", "amount": null, "balance": null }
+]

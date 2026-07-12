@@ -700,6 +700,63 @@ async function extractGmailApiHtmlAttachmentTexts(messageId: string, payload: Gm
   return texts;
 }
 
+export type GmailPdfAttachment = {
+  filename: string | null;
+  data: Uint8Array;
+};
+
+function collectGmailApiPdfAttachments(part: GmailApiMessagePart | undefined, attachments: GmailApiTextAttachment[] = []) {
+  if (!part) {
+    return attachments;
+  }
+
+  const filename = part.filename?.trim() || null;
+  const mimeType = (part.mimeType ?? "").toLowerCase();
+  const attachmentId = part.body?.attachmentId;
+  const looksLikePdf = mimeType === "application/pdf" || Boolean(filename?.toLowerCase().endsWith(".pdf"));
+
+  if (looksLikePdf && typeof attachmentId === "string") {
+    attachments.push({ attachmentId, filename });
+  }
+
+  for (const child of part.parts ?? []) {
+    collectGmailApiPdfAttachments(child, attachments);
+  }
+
+  return attachments;
+}
+
+export async function readGmailPdfAttachments(message: GmailMessageSummary, overrides: Partial<GmailMcpConfig> = {}): Promise<GmailPdfAttachment[]> {
+  const config = getGmailMcpConfig(overrides);
+
+  if (!config.enabled) {
+    return [];
+  }
+
+  if (config.provider !== "gmail-api") {
+    throw new Error("PDF attachments are only supported by the gmail-api provider.");
+  }
+
+  const payload = await fetchGmailApiJson<GmailApiMessageResponse>(config, `/users/me/messages/${encodeURIComponent(message.id)}`, { format: "full" });
+  const attachments = collectGmailApiPdfAttachments(payload.payload);
+  const results: GmailPdfAttachment[] = [];
+
+  for (const attachment of attachments) {
+    const response = await fetchGmailApiJson<GmailApiAttachmentResponse>(
+      config,
+      `/users/me/messages/${encodeURIComponent(message.id)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
+    );
+
+    if (typeof response.data !== "string") {
+      continue;
+    }
+
+    results.push({ filename: attachment.filename, data: new Uint8Array(decodeBase64UrlBuffer(response.data)) });
+  }
+
+  return results;
+}
+
 async function searchGmailApiMessages(config: GmailMcpConfig): Promise<GmailMessageSummary[]> {
   const query = config.query.trim();
   const maxResults = Math.max(config.maxMessages, 1);

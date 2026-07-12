@@ -24,6 +24,8 @@ import {
 } from "../src/domain/imports/gmail-mcp-adapter";
 import { confirmImportBatch, createImportDedupeKey, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
+import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
+import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -167,6 +169,16 @@ function mbankFixture() {
   return readFileSync(join(process.cwd(), "tests/fixtures/mbank-real-format-anon.txt"), "utf8");
 }
 
+function mbankStatementRowsFixture(): StatementRow[] {
+  return JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/mbank-statement-rows-anon.json"), "utf8"));
+}
+
+// Offline categorizer for sync tests: mirrors the deterministic keyword seed so
+// tests never depend on a running local LLM.
+const deterministicCategorize = async (
+  transactions: Array<{ description: string; merchant: string | null; direction: "INFLOW" | "OUTFLOW" }>
+) => transactions.map((transaction) => categorizeMbankTransaction(`${transaction.merchant ?? ""} ${transaction.description}`, transaction.direction));
+
 function toBase64Url(value: string) {
   return Buffer.from(value, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -204,7 +216,7 @@ function sendJson(res: ServerResponse, value: unknown) {
 
 type FakeImportBatch = {
   id: string;
-  provider: "MBANK_EMAIL";
+  provider: "MBANK_EMAIL" | "MBANK_STATEMENT";
   source: "GMAIL_MCP";
   gmailMessageId: string;
   gmailThreadId: string | null;
@@ -212,6 +224,8 @@ type FakeImportBatch = {
   sender: string | null;
   operationDate: Date | null;
   receivedAt: Date | null;
+  periodStart: Date | null;
+  periodEnd: Date | null;
   status: string;
   transactionCount: number;
   parsedTransactions: unknown;
@@ -235,13 +249,23 @@ type FakeBankTransaction = {
   balanceAfter: number | null;
 };
 
+type FakeDateRange = { gte?: Date; lte?: Date };
+
 type FakeBatchWhere = {
   id?: string;
   provider?: string;
   gmailMessageId?: string;
   operationDate?: Date | null;
+  periodStart?: Date | null | { not: null };
+  periodEnd?: Date | null | { not: null };
   status?: string | { in: string[] };
   NOT?: { id?: string };
+};
+
+type FakeTransactionWhere = {
+  importBatchId?: string;
+  bookingDate?: FakeDateRange;
+  NOT?: { importBatchId?: string };
 };
 
 type FakeDb = {
@@ -252,11 +276,15 @@ type FakeDb = {
   importBatch: {
     create(args: { data: Partial<FakeImportBatch> }): Promise<FakeImportBatch>;
     findFirst(args: { where?: FakeBatchWhere; orderBy?: unknown }): Promise<FakeImportBatch | null>;
+    findMany(args: { where?: FakeBatchWhere; select?: unknown }): Promise<FakeImportBatch[]>;
     findUnique(args: { where: { id: string }; include?: { transactions?: boolean } }): Promise<(FakeImportBatch & { transactions?: FakeBankTransaction[] }) | null>;
     update(args: { where: { id: string }; data: Partial<FakeImportBatch> }): Promise<FakeImportBatch>;
   };
   bankTransaction: {
     createMany(args: { data: Array<Partial<FakeBankTransaction>> }): Promise<{ count: number }>;
+    findMany(args: { where?: FakeTransactionWhere; select?: unknown }): Promise<FakeBankTransaction[]>;
+    deleteMany(args: { where?: FakeTransactionWhere }): Promise<{ count: number }>;
+    count(args: { where?: FakeTransactionWhere }): Promise<number>;
     update(args: { where: { id: string }; data: Partial<FakeBankTransaction> }): Promise<FakeBankTransaction>;
   };
   $transaction<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T>;
@@ -282,6 +310,18 @@ function createImportHarness() {
   let transactionSeq = 0;
   let spanSeq = 0;
 
+  function notNullMatches(value: Date | null, condition: Date | null | { not: null } | undefined) {
+    if (condition === undefined) {
+      return true;
+    }
+
+    if (condition !== null && typeof condition === "object" && "not" in condition) {
+      return value !== null;
+    }
+
+    return sameDate(value, condition);
+  }
+
   function matches(batch: FakeImportBatch, where: FakeBatchWhere | undefined) {
     if (!where) {
       return true;
@@ -292,9 +332,40 @@ function createImportHarness() {
       (where.provider === undefined || batch.provider === where.provider) &&
       (where.gmailMessageId === undefined || batch.gmailMessageId === where.gmailMessageId) &&
       sameDate(batch.operationDate, where.operationDate) &&
+      notNullMatches(batch.periodStart, where.periodStart) &&
+      notNullMatches(batch.periodEnd, where.periodEnd) &&
       (where.status === undefined || (typeof where.status === "string" ? batch.status === where.status : where.status.in.includes(batch.status))) &&
       (where.NOT?.id === undefined || batch.id !== where.NOT.id)
     );
+  }
+
+  function transactionMatches(transaction: FakeBankTransaction, where: FakeTransactionWhere | undefined) {
+    if (!where) {
+      return true;
+    }
+
+    if (where.importBatchId !== undefined && transaction.importBatchId !== where.importBatchId) {
+      return false;
+    }
+
+    if (where.NOT?.importBatchId !== undefined && transaction.importBatchId === where.NOT.importBatchId) {
+      return false;
+    }
+
+    if (where.bookingDate) {
+      const value = transaction.bookingDate;
+      if (value === null) {
+        return false;
+      }
+      if (where.bookingDate.gte && value.getTime() < where.bookingDate.gte.getTime()) {
+        return false;
+      }
+      if (where.bookingDate.lte && value.getTime() > where.bookingDate.lte.getTime()) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   const db = {} as FakeDb;
@@ -316,7 +387,7 @@ function createImportHarness() {
       const now = new Date("2026-07-04T10:00:00.000Z");
       const batch: FakeImportBatch = {
         id: `batch-${++batchSeq}`,
-        provider: "MBANK_EMAIL",
+        provider: data.provider ?? "MBANK_EMAIL",
         source: "GMAIL_MCP",
         gmailMessageId: String(data.gmailMessageId),
         gmailThreadId: data.gmailThreadId ?? null,
@@ -324,6 +395,8 @@ function createImportHarness() {
         sender: data.sender ?? null,
         operationDate: data.operationDate ?? null,
         receivedAt: data.receivedAt ?? null,
+        periodStart: data.periodStart ?? null,
+        periodEnd: data.periodEnd ?? null,
         status: data.status ?? "PENDING_REVIEW",
         transactionCount: data.transactionCount ?? 0,
         parsedTransactions: data.parsedTransactions ?? null,
@@ -336,6 +409,9 @@ function createImportHarness() {
     },
     async findFirst({ where }) {
       return batches.find((batch) => matches(batch, where)) ?? null;
+    },
+    async findMany({ where }) {
+      return batches.filter((batch) => matches(batch, where));
     },
     async findUnique({ where, include }) {
       const batch = batches.find((item) => item.id === where.id) ?? null;
@@ -375,6 +451,19 @@ function createImportHarness() {
       }
 
       return { count: data.length };
+    },
+    async findMany({ where }) {
+      return transactions.filter((transaction) => transactionMatches(transaction, where));
+    },
+    async deleteMany({ where }) {
+      const removed = transactions.filter((transaction) => transactionMatches(transaction, where));
+      for (const transaction of removed) {
+        transactions.splice(transactions.indexOf(transaction), 1);
+      }
+      return { count: removed.length };
+    },
+    async count({ where }) {
+      return transactions.filter((transaction) => transactionMatches(transaction, where)).length;
     },
     async update({ where, data }) {
       const transaction = transactions.find((item) => item.id === where.id);
@@ -1021,7 +1110,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: mbankFixture() })
       };
 
-      const firstSync = await syncMbankGmail(db, { adapter, traceId: "test-sync" });
+      const firstSync = await syncMbankGmail(db, { adapter, traceId: "test-sync", categorize: deterministicCategorize });
       assert.equal(firstSync.created, 1);
       assert.equal(state.batches.length, 1);
       assert.equal(state.batches[0]?.status, "PENDING_REVIEW");
@@ -1044,9 +1133,189 @@ Numer referencyjny maila: X.
       assert.equal(confirmedAgain.created, 0);
       assert.equal(state.transactions.length, 1);
 
-      const secondSync = await syncMbankGmail(db, { adapter, traceId: "test-sync-2" });
+      const secondSync = await syncMbankGmail(db, { adapter, traceId: "test-sync-2", categorize: deterministicCategorize });
       assert.equal(secondSync.duplicates, 1);
       assert.equal(state.batches.length, 1);
+    }
+  },
+  {
+    name: "mBank statement parser extracts card purchases and validates against the summary totals",
+    async run() {
+      const parsed = parseMbankStatement(mbankStatementRowsFixture());
+
+      assert.equal(parsed.periodStart.toISOString().slice(0, 10), "2026-06-01");
+      assert.equal(parsed.periodEnd.toISOString().slice(0, 10), "2026-06-30");
+      assert.equal(parsed.openingBalance, 100);
+      assert.equal(parsed.closingBalance, 320);
+      assert.equal(parsed.transactions.length, 4);
+
+      // The card purchase only exists in the statement PDF, never in daily emails.
+      const card = parsed.transactions.find((transaction) => transaction.merchant?.startsWith("ZABKA"));
+      assert.ok(card, "expected the card purchase to be parsed");
+      assert.equal(card?.direction, "OUTFLOW");
+      assert.equal(card?.amount, 20);
+      assert.equal(card?.category, "food");
+      // Card transaction date (DATA TRANSAKCJI) wins over the booking date for operationDate.
+      assert.equal(card?.operationDate.toISOString().slice(0, 10), "2026-05-31");
+      assert.equal(card?.bookingDate?.toISOString().slice(0, 10), "2026-06-01");
+
+      const personTransfer = parsed.transactions.find((transaction) => transaction.merchant?.startsWith("JAN KOWALSKI"));
+      assert.equal(personTransfer?.category, "people_transfers");
+      assert.equal(personTransfer?.direction, "INFLOW");
+
+      const salary = parsed.transactions.find((transaction) => transaction.merchant?.startsWith("TESTOWA"));
+      assert.equal(salary?.category, "income");
+      assert.equal(salary?.amount, 200);
+    }
+  },
+  {
+    name: "mBank statement parser rejects a tampered balance chain",
+    async run() {
+      const rows = mbankStatementRowsFixture();
+      const brokenRow = rows.find((row) => row.balance === "80,00");
+      assert.ok(brokenRow, "expected a row with balance 80,00 to tamper");
+      brokenRow!.balance = "81,00";
+
+      assert.throws(() => parseMbankStatement(rows), /balance chain mismatch/i);
+    }
+  },
+  {
+    name: "LLM categorizer applies valid model answers and keeps deterministic seed otherwise",
+    async run() {
+      const transactions = [
+        { description: "ZAKUP PRZY UŻYCIU KARTY; SALON FRYZJERSKI ELEGANCJA", merchant: "SALON FRYZJERSKI ELEGANCJA", direction: "OUTFLOW" as const, amount: 80, category: "other" as const },
+        { description: "ZAKUP PRZY UŻYCIU KARTY; ZABKA Z123 KRAKOW PL", merchant: "ZABKA Z123 KRAKOW PL", direction: "OUTFLOW" as const, amount: 12, category: "food" as const },
+        { description: "BLIK ZAKUP E-COMMERCE; STEAM GAMES", merchant: "STEAM GAMES", direction: "OUTFLOW" as const, amount: 60, category: "shopping" as const }
+      ];
+
+      // The model recognises the hair salon (which no keyword covers) and returns
+      // a Polish label for row 3; it omits row 2, which keeps its parser category.
+      const chat: LlmChatFn = async () => ({
+        success: true,
+        model: "test",
+        content: JSON.stringify({ items: [{ i: 1, kategoria: "health" }, { i: 3, kategoria: "rozrywka" }] })
+      });
+
+      const categories = await categorizeTransactionsWithLlm(transactions, { chat });
+      assert.deepEqual(categories, ["health", "food", "entertainment"]);
+    }
+  },
+  {
+    name: "LLM categorizer falls back to deterministic categories when the model fails",
+    async run() {
+      const transactions = [
+        { description: "ZAKUP PRZY UŻYCIU KARTY; ORLEN STACJA 12", merchant: "ORLEN STACJA 12", direction: "OUTFLOW" as const, amount: 250, category: "transport" as const },
+        { description: "PRZELEW ZEWNĘTRZNY PRZYCHODZĄCY; ANNA NOWAK", merchant: "ANNA NOWAK", direction: "INFLOW" as const, amount: 300, category: "people_transfers" as const }
+      ];
+
+      const chat: LlmChatFn = async () => ({ success: false, error: { code: "network_error", message: "offline" } });
+
+      const categories = await categorizeTransactionsWithLlm(transactions, { chat });
+      assert.deepEqual(categories, ["transport", "people_transfers"]);
+    }
+  },
+  {
+    name: "confirmed statement supersedes daily-notification transactions booked in its period",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      // A daily-notification transfer already imported for 2026-06-14 (also present in the statement).
+      const dailyBatch = await db.importBatch.create({
+        data: { gmailMessageId: "daily-msg", operationDate: new Date("2026-06-14T00:00:00.000Z"), status: "IMPORTED", transactionCount: 1 }
+      });
+      await db.bankTransaction.createMany({
+        data: [
+          {
+            importBatchId: dailyBatch.id,
+            operationDate: new Date("2026-06-14T00:00:00.000Z"),
+            bookingDate: new Date("2026-06-14T00:00:00.000Z"),
+            amount: 300,
+            currency: "PLN",
+            direction: "INFLOW",
+            description: "PRZELEW",
+            merchant: "MONIKA",
+            category: "people_transfers"
+          }
+        ]
+      });
+
+      const parsed = parseMbankStatement(mbankStatementRowsFixture());
+      const statementBatch = await db.importBatch.create({
+        data: {
+          provider: "MBANK_STATEMENT",
+          gmailMessageId: "statement-msg",
+          operationDate: parsed.periodEnd,
+          periodStart: parsed.periodStart,
+          periodEnd: parsed.periodEnd,
+          status: "PENDING_REVIEW",
+          transactionCount: parsed.transactions.length,
+          parsedTransactions: parsed.transactions.map((transaction) => ({
+            operationDate: transaction.operationDate.toISOString(),
+            bookingDate: transaction.bookingDate ? transaction.bookingDate.toISOString() : null,
+            amount: transaction.amount,
+            currency: transaction.currency,
+            direction: transaction.direction,
+            description: transaction.description,
+            merchant: transaction.merchant,
+            category: transaction.category
+          }))
+        }
+      });
+
+      const confirmed = await confirmImportBatch(db, statementBatch.id);
+      assert.equal(confirmed.created, 4);
+      assert.equal("superseded" in confirmed ? confirmed.superseded : -1, 1);
+
+      // The old daily transfer is gone; only the statement's four transactions remain.
+      assert.equal(state.transactions.length, 4);
+      assert.ok(state.transactions.every((transaction) => transaction.importBatchId === statementBatch.id));
+      // The superseded daily batch count is refreshed to zero.
+      assert.equal(state.batches.find((batch) => batch.id === dailyBatch.id)?.transactionCount, 0);
+    }
+  },
+  {
+    name: "daily-notification import skips transactions already covered by an imported statement",
+    async run() {
+      const { db, state } = createImportHarness();
+      const parsed = parseMbankStatement(mbankStatementRowsFixture());
+
+      await db.importBatch.create({
+        data: {
+          provider: "MBANK_STATEMENT",
+          gmailMessageId: "statement-msg",
+          operationDate: parsed.periodEnd,
+          periodStart: parsed.periodStart,
+          periodEnd: parsed.periodEnd,
+          status: "IMPORTED",
+          transactionCount: parsed.transactions.length
+        }
+      });
+
+      const dailyBatch = await db.importBatch.create({
+        data: {
+          gmailMessageId: "daily-msg",
+          operationDate: new Date("2026-06-14T00:00:00.000Z"),
+          status: "PENDING_REVIEW",
+          transactionCount: 1,
+          parsedTransactions: [
+            {
+              operationDate: "2026-06-14T00:00:00.000Z",
+              bookingDate: "2026-06-14T00:00:00.000Z",
+              amount: 300,
+              currency: "PLN",
+              direction: "INFLOW",
+              description: "PRZELEW",
+              merchant: "MONIKA",
+              category: "people_transfers"
+            }
+          ]
+        }
+      });
+
+      const confirmed = await confirmImportBatch(db, dailyBatch.id);
+      assert.equal(confirmed.created, 0);
+      assert.equal(state.transactions.length, 0);
+      assert.equal(state.batches.find((batch) => batch.id === dailyBatch.id)?.status, "IMPORTED");
     }
   },
   {
@@ -1066,7 +1335,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: "mBank\nData: 02.07.2026\nTo jest powiadomienie e-mail bez szczegolow transakcji." })
       };
 
-      const sync = await syncMbankGmail(db, { adapter, traceId: "skip-notification-sync" });
+      const sync = await syncMbankGmail(db, { adapter, traceId: "skip-notification-sync", categorize: deterministicCategorize });
       assert.equal(sync.skipped, 1);
       assert.equal(sync.failed, 0);
       assert.equal(state.batches.length, 1);
@@ -1091,7 +1360,7 @@ Numer referencyjny maila: X.
         readGmailMessage: async () => ({ ...summary, bodyText: "mBank message without operation date" })
       };
 
-      const failedSync = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "retry-sync" });
+      const failedSync = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "retry-sync", categorize: deterministicCategorize });
       assert.equal(failedSync.failed, 1);
       assert.equal(state.batches.length, 1);
       assert.equal(state.batches[0]?.status, "FAILED");

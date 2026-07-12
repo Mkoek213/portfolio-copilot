@@ -1,17 +1,62 @@
 import { Prisma, type BankTransaction, type ImportBatch, type PrismaClient } from "@prisma/client";
-import { readGmailMessage, searchMbankMessages, type GmailMessageBody, type GmailMessageSummary } from "./gmail-mcp-adapter";
+import {
+  readGmailMessage,
+  readGmailPdfAttachments,
+  searchMbankMessages,
+  type GmailMessageBody,
+  type GmailMessageSummary,
+  type GmailPdfAttachment
+} from "./gmail-mcp-adapter";
 import { MbankParseError, parseMbankEmail, type ParsedMbankTransaction } from "./mbank-parser";
+import { MbankStatementParseError, parseMbankStatementPdf, type ParsedMbankStatement } from "./mbank-statement-parser";
+import { categorizeTransactionsWithLlm, type CategorizableTransaction } from "./llm-categorizer";
 import { EXPENSE_CATEGORIES, isExpenseCategory } from "@/domain/portfolio/categories";
 import { recordTraceWarning, traceStep } from "@/domain/tracing/local-tracing";
 
 const RESOURCE_ID = "local-user";
 
+// mBank titles the monthly statement email "elektroniczne zestawienie operacji za <month> <year>".
+const STATEMENT_SUBJECT_RE = /elektroniczne zestawienie operacji/i;
+
+function statementPasswordFromEnv() {
+  return (process.env.MBANK_STATEMENT_PDF_PASSWORD ?? "").replace(/^"|"$/g, "") || undefined;
+}
+
 type GmailAdapter = {
   searchMbankMessages: () => Promise<GmailMessageSummary[]>;
   readGmailMessage: (message: GmailMessageSummary) => Promise<GmailMessageBody>;
+  readGmailPdfAttachments?: (message: GmailMessageSummary) => Promise<GmailPdfAttachment[]>;
 };
 
 type GmailReadAdapter = Pick<GmailAdapter, "readGmailMessage">;
+
+// Assigns a category to each parsed transaction. Defaults to the local LLM
+// (with a deterministic keyword fallback); injectable so tests stay offline.
+export type CategorizeTransactions = (transactions: CategorizableTransaction[]) => Promise<ParsedMbankTransaction["category"][]>;
+
+function toCategorizable(transaction: ParsedMbankTransaction): CategorizableTransaction {
+  return {
+    description: transaction.description,
+    merchant: transaction.merchant,
+    direction: transaction.direction,
+    amount: transaction.amount,
+    category: transaction.category
+  };
+}
+
+async function applyCategories<T extends { transactions: ParsedMbankTransaction[] }>(parsed: T, categorize: CategorizeTransactions): Promise<T> {
+  if (parsed.transactions.length === 0) {
+    return parsed;
+  }
+
+  const categories = await categorize(parsed.transactions.map(toCategorizable));
+  const transactions = parsed.transactions.map((transaction, index) => ({
+    ...transaction,
+    category: categories[index] ?? transaction.category
+  }));
+
+  return { ...parsed, transactions };
+}
 
 export type MbankImportSyncResult = {
   status: "unavailable" | "no_new_messages" | "completed";
@@ -248,12 +293,99 @@ async function createPendingBatch(db: PrismaClient, message: GmailMessageBody, p
   return { created: true as const, batch };
 }
 
+async function createPendingStatementBatch(db: PrismaClient, message: GmailMessageBody, parsed: ParsedMbankStatement) {
+  const parsedTransactions = parsed.transactions.map(toStoredTransaction);
+  // The statement period end doubles as the batch operationDate so the existing
+  // (provider, gmailMessageId, operationDate) dedupe key stays meaningful.
+  const existing = await db.importBatch.findFirst({
+    where: { provider: "MBANK_STATEMENT", gmailMessageId: message.id, operationDate: parsed.periodEnd }
+  });
+
+  if (existing) {
+    return { created: false as const, batch: existing };
+  }
+
+  const batch = await db.importBatch.create({
+    data: {
+      provider: "MBANK_STATEMENT",
+      source: "GMAIL_MCP",
+      gmailMessageId: message.id,
+      gmailThreadId: message.threadId ?? null,
+      subject: message.subject ?? null,
+      sender: message.sender ?? null,
+      operationDate: parsed.periodEnd,
+      receivedAt: message.receivedAt ?? null,
+      periodStart: parsed.periodStart,
+      periodEnd: parsed.periodEnd,
+      status: "PENDING_REVIEW",
+      transactionCount: parsed.transactions.length,
+      parsedTransactions
+    }
+  });
+
+  return { created: true as const, batch };
+}
+
+function isStatementMessage(message: GmailMessageBody) {
+  return STATEMENT_SUBJECT_RE.test(message.subject ?? "");
+}
+
+async function isCoveredByImportedStatement(db: PrismaClient, date: Date) {
+  const covering = await db.importBatch.findFirst({
+    where: {
+      provider: "MBANK_STATEMENT",
+      status: "IMPORTED",
+      periodStart: { lte: date },
+      periodEnd: { gte: date }
+    }
+  });
+
+  return covering !== null;
+}
+
+async function processStatementMessage(
+  db: PrismaClient,
+  message: GmailMessageBody,
+  adapter: Pick<GmailAdapter, "readGmailPdfAttachments">,
+  traceId: string,
+  password: string | undefined,
+  categorize: CategorizeTransactions
+) {
+  const readPdfAttachments = adapter.readGmailPdfAttachments;
+
+  if (!readPdfAttachments) {
+    throw new MbankStatementParseError("This Gmail adapter cannot read PDF attachments, so mBank statements cannot be imported.");
+  }
+
+  const attachments = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-sync.statement-pdf", input: { id: message.id } }, () =>
+    readPdfAttachments(message)
+  );
+  const pdf = attachments.find((attachment) => (attachment.filename ?? "").toLowerCase().endsWith(".pdf")) ?? attachments[0];
+
+  if (!pdf) {
+    throw new MbankStatementParseError("mBank statement email has no PDF attachment to parse.");
+  }
+
+  const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "mbank-statement-parser", input: { id: message.id } }, () =>
+    parseMbankStatementPdf(pdf.data, password)
+  );
+  const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
+    applyCategories(parsed, categorize)
+  );
+
+  return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
+    createPendingStatementBatch(db, message, categorized)
+  );
+}
+
 export async function syncMbankGmail(
   db: PrismaClient,
-  options: { adapter?: GmailAdapter; traceId?: string } = {}
+  options: { adapter?: GmailAdapter; traceId?: string; statementPassword?: string; categorize?: CategorizeTransactions } = {}
 ): Promise<MbankImportSyncResult> {
-  const adapter = options.adapter ?? { searchMbankMessages, readGmailMessage };
+  const adapter = options.adapter ?? { searchMbankMessages, readGmailMessage, readGmailPdfAttachments };
   const traceId = options.traceId ?? `gmail-sync-${Date.now()}`;
+  const statementPassword = options.statementPassword ?? statementPasswordFromEnv();
+  const categorize = options.categorize ?? ((transactions) => categorizeTransactionsWithLlm(transactions));
 
   let messages: GmailMessageSummary[];
 
@@ -297,14 +429,32 @@ export async function syncMbankGmail(
       const fullMessage = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-sync.read", input: { id: message.id } }, () =>
         adapter.readGmailMessage(message)
       );
-      const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "mbank-parser", input: { id: message.id } }, () =>
-        parseMbankEmail(fullMessage.bodyText)
-      );
-      const result = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
-        createPendingBatch(db, fullMessage, parsed)
-      );
 
-      if (result.created) {
+      const result = isStatementMessage(fullMessage)
+        ? await processStatementMessage(db, fullMessage, adapter, traceId, statementPassword, categorize)
+        : await (async () => {
+            const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "mbank-parser", input: { id: message.id } }, () =>
+              parseMbankEmail(fullMessage.bodyText)
+            );
+
+            // A confirmed monthly statement already owns this day, so the daily
+            // notification is redundant and should not clutter the review queue.
+            if (await isCoveredByImportedStatement(db, parsed.operationDate)) {
+              return { created: false as const, batch: null, covered: true as const };
+            }
+
+            const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
+              applyCategories(parsed, categorize)
+            );
+
+            return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
+              createPendingBatch(db, fullMessage, categorized)
+            );
+          })();
+
+      if ("covered" in result && result.covered) {
+        duplicates += 1;
+      } else if (result.created) {
         created += 1;
       } else {
         duplicates += 1;
@@ -530,32 +680,79 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
     throw new Error("Import batch has no parsed transactions to confirm.");
   }
 
-  const updated = await db.$transaction(async (tx) => {
-    await tx.bankTransaction.createMany({
-      data: parsed.map((transaction) => ({
-        importBatchId: batch.id,
-        provider: "MBANK",
-        source: "EMAIL",
-        operationDate: new Date(transaction.operationDate),
-        bookingDate: transaction.bookingDate ? new Date(transaction.bookingDate) : null,
-        amount: transaction.amount,
-        currency: transaction.currency,
-        direction: transaction.direction,
-        description: transaction.description,
-        merchant: transaction.merchant,
-        category: transaction.category,
-        accountLabel: transaction.accountLabel ?? null,
-        balanceAfter: transaction.balanceAfter ?? null
-      }))
+  const isStatement = batch.provider === "MBANK_STATEMENT";
+  const source = isStatement ? ("STATEMENT" as const) : ("EMAIL" as const);
+
+  if (isStatement && (!batch.periodStart || !batch.periodEnd)) {
+    throw new Error("Statement import batch is missing its period range.");
+  }
+
+  const rows = parsed.map((transaction) => ({
+    importBatchId: batch.id,
+    provider: "MBANK" as const,
+    source,
+    operationDate: new Date(transaction.operationDate),
+    bookingDate: transaction.bookingDate ? new Date(transaction.bookingDate) : null,
+    amount: transaction.amount,
+    currency: transaction.currency,
+    direction: transaction.direction,
+    description: transaction.description,
+    merchant: transaction.merchant,
+    category: transaction.category,
+    accountLabel: transaction.accountLabel ?? null,
+    balanceAfter: transaction.balanceAfter ?? null
+  }));
+
+  // A monthly statement owns its whole period, so a daily-notification import must
+  // not re-add transactions for a period an imported statement already covers.
+  let effectiveRows = rows;
+  if (!isStatement) {
+    const statementPeriods = await db.importBatch.findMany({
+      where: { provider: "MBANK_STATEMENT", status: "IMPORTED", periodStart: { not: null }, periodEnd: { not: null } },
+      select: { periodStart: true, periodEnd: true }
     });
 
-    return tx.importBatch.update({
+    if (statementPeriods.length > 0) {
+      effectiveRows = rows.filter((row) => {
+        const bookedAt = row.bookingDate ?? row.operationDate;
+        return !statementPeriods.some((period) => period.periodStart! <= bookedAt && bookedAt <= period.periodEnd!);
+      });
+    }
+  }
+
+  const updated = await db.$transaction(async (tx) => {
+    let supersededCount = 0;
+
+    if (isStatement && batch.periodStart && batch.periodEnd) {
+      // The statement is the authoritative record for its period: replace any
+      // transactions already booked in that range (daily-notification imports or
+      // a previous copy of this statement) so nothing is double-counted.
+      const periodWhere = { bookingDate: { gte: batch.periodStart, lte: batch.periodEnd } };
+      const superseded = await tx.bankTransaction.findMany({ where: periodWhere, select: { importBatchId: true } });
+      supersededCount = superseded.length;
+
+      await tx.bankTransaction.deleteMany({ where: periodWhere });
+
+      const affectedBatchIds = [...new Set(superseded.map((row) => row.importBatchId))].filter((id) => id !== batch.id);
+      for (const affectedId of affectedBatchIds) {
+        const remaining = await tx.bankTransaction.count({ where: { importBatchId: affectedId } });
+        await tx.importBatch.update({ where: { id: affectedId }, data: { transactionCount: remaining } });
+      }
+    }
+
+    if (effectiveRows.length > 0) {
+      await tx.bankTransaction.createMany({ data: effectiveRows });
+    }
+
+    const nextBatch = await tx.importBatch.update({
       where: { id: batch.id },
-      data: { status: "IMPORTED", transactionCount: parsed.length }
+      data: { status: "IMPORTED", transactionCount: effectiveRows.length }
     });
+
+    return { batch: nextBatch, supersededCount };
   });
 
-  return { status: "imported" as const, created: parsed.length, batch: updated };
+  return { status: "imported" as const, created: effectiveRows.length, superseded: updated.supersededCount, batch: updated.batch };
 }
 
 export async function rejectImportBatch(db: PrismaClient, batchId: string): Promise<ImportBatch> {
