@@ -5,7 +5,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runPortfolioAnalysis } from "@/domain/workflows/run-analysis";
 import { LOCAL_RESOURCE_ID, defaultStrategy } from "@/domain/portfolio/strategy";
-import { confirmImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "@/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "@/domain/imports/mbank-import-pipeline";
 import { writeImportObservation } from "@/domain/memory/observational-memory";
 import { runDailySchedulerTick } from "@/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "@/domain/retention/cleanup";
@@ -293,6 +293,51 @@ export async function rejectAllPendingImportsAction(_previousState: ActionResult
     );
   } catch (error) {
     return result("error", "Bulk reject failed.", error instanceof Error ? error.message : "Unknown import error.");
+  }
+}
+
+export async function deleteImportAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  try {
+    const batchId = formString(formData, "batchId");
+    await deleteImportBatch(prisma, batchId);
+    await writeImportObservation(prisma, {
+      resourceId: LOCAL_RESOURCE_ID,
+      batchId,
+      topic: "import-deleted",
+      content: `Deleted import batch ${batchId}.`,
+      priority: "LOW"
+    });
+    revalidatePath("/");
+    return result("success", "Import deleted.", "The batch was removed.");
+  } catch (error) {
+    return result("error", "Import was not deleted.", error instanceof Error ? error.message : "Unknown import error.");
+  }
+}
+
+export async function deleteAllResolvedImportsAction(_previousState: ActionResult, _formData: FormData): Promise<ActionResult> {
+  void _previousState;
+  void _formData;
+
+  try {
+    const { deleted } = await deleteAllResolvedImportBatches(prisma);
+
+    if (deleted > 0) {
+      await writeImportObservation(prisma, {
+        resourceId: LOCAL_RESOURCE_ID,
+        topic: "import-deleted",
+        content: `Deleted ${deleted} resolved import batch(es) in bulk.`,
+        priority: "LOW"
+      });
+    }
+
+    revalidatePath("/");
+    return result(
+      "success",
+      deleted > 0 ? `Deleted ${deleted} import${deleted === 1 ? "" : "s"}.` : "No resolved imports to delete.",
+      deleted > 0 ? "Failed/skipped batches with no linked transactions were removed." : undefined
+    );
+  } catch (error) {
+    return result("error", "Bulk delete failed.", error instanceof Error ? error.message : "Unknown import error.");
   }
 }
 

@@ -22,7 +22,7 @@ import {
   validateOfficialGmailMcpEndpoint,
   type GmailMessageSummary
 } from "../src/domain/imports/gmail-mcp-adapter";
-import { confirmImportBatch, createImportDedupeKey, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
@@ -279,6 +279,7 @@ type FakeDb = {
     findMany(args: { where?: FakeBatchWhere; select?: unknown }): Promise<FakeImportBatch[]>;
     findUnique(args: { where: { id: string }; include?: { transactions?: boolean } }): Promise<(FakeImportBatch & { transactions?: FakeBankTransaction[] }) | null>;
     update(args: { where: { id: string }; data: Partial<FakeImportBatch> }): Promise<FakeImportBatch>;
+    delete(args: { where: { id: string } }): Promise<FakeImportBatch>;
   };
   bankTransaction: {
     createMany(args: { data: Array<Partial<FakeBankTransaction>> }): Promise<{ count: number }>;
@@ -429,6 +430,15 @@ function createImportHarness() {
 
       Object.assign(batch, data, { updatedAt: new Date("2026-07-04T10:05:00.000Z") });
       return batch;
+    },
+    async delete({ where }) {
+      const index = batches.findIndex((item) => item.id === where.id);
+      if (index === -1) {
+        throw new Error(`Missing fake batch ${where.id}`);
+      }
+
+      const [removed] = batches.splice(index, 1);
+      return removed;
     }
   };
   db.bankTransaction = {
@@ -1154,6 +1164,49 @@ Numer referencyjny maila: X.
 
       const secondRun = await rejectAllPendingImportBatches(db);
       assert.equal(secondRun.rejected, 0);
+    }
+  },
+  {
+    name: "deleteImportBatch removes resolved batches with no linked transactions but refuses the rest",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      const skipped = await db.importBatch.create({ data: { gmailMessageId: "msg-skip", status: "SKIPPED" } });
+      const failed = await db.importBatch.create({ data: { gmailMessageId: "msg-fail", status: "FAILED" } });
+      const pending = await db.importBatch.create({ data: { gmailMessageId: "msg-pending", status: "PENDING_REVIEW" } });
+
+      await assert.rejects(() => deleteImportBatch(db, pending.id), /cannot be deleted from status PENDING_REVIEW/);
+
+      await db.bankTransaction.createMany({
+        data: [{ importBatchId: failed.id, operationDate: new Date("2026-07-01T00:00:00.000Z"), amount: 10, direction: "OUTFLOW", description: "linked", category: "other" }]
+      });
+      await assert.rejects(() => deleteImportBatch(db, failed.id), /linked transaction/);
+
+      const deleted = await deleteImportBatch(db, skipped.id);
+      assert.equal(deleted.deleted, true);
+      assert.equal(state.batches.length, 2);
+      assert.equal(state.batches.some((batch) => batch.id === skipped.id), false);
+    }
+  },
+  {
+    name: "deleteAllResolvedImportBatches bulk-deletes failed/skipped batches without linked transactions",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      await db.importBatch.create({ data: { gmailMessageId: "msg-a", status: "SKIPPED" } });
+      const blocked = await db.importBatch.create({ data: { gmailMessageId: "msg-b", status: "FAILED" } });
+      await db.importBatch.create({ data: { gmailMessageId: "msg-c", status: "IMPORTED" } });
+      await db.importBatch.create({ data: { gmailMessageId: "msg-d", status: "PENDING_REVIEW" } });
+
+      await db.bankTransaction.createMany({
+        data: [{ importBatchId: blocked.id, operationDate: new Date("2026-07-01T00:00:00.000Z"), amount: 5, direction: "OUTFLOW", description: "linked", category: "other" }]
+      });
+
+      const { deleted } = await deleteAllResolvedImportBatches(db);
+      assert.equal(deleted, 1);
+      assert.equal(state.batches.length, 3);
+      assert.equal(state.batches.some((batch) => batch.gmailMessageId === "msg-a"), false);
+      assert.equal(state.batches.find((batch) => batch.id === blocked.id)?.status, "FAILED");
     }
   },
   {

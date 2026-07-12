@@ -3,14 +3,14 @@
 import { useActionState, useEffect } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
+import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { EXPENSE_CATEGORY_OPTIONS } from "@/domain/portfolio/categories";
-import { confirmImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
+import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
-type ImportActionKind = "sync" | "confirm" | "reject" | "retry" | "reject-all";
+type ImportActionKind = "sync" | "confirm" | "reject" | "retry" | "reject-all" | "delete" | "delete-all";
 
 function hasKnownCategory(category: string) {
   return EXPENSE_CATEGORY_OPTIONS.some((option) => option.value === category);
@@ -39,10 +39,21 @@ function CategorySelect({ category, label }: { category: string; label: string }
 
 function Button({ kind, children }: { kind: ImportActionKind; children: React.ReactNode }) {
   const { pending } = useFormStatus();
-  const Icon = pending ? Loader2 : kind === "sync" ? RefreshCw : kind === "confirm" ? Check : kind === "retry" ? RotateCcw : X;
+  const Icon = pending
+    ? Loader2
+    : kind === "sync"
+      ? RefreshCw
+      : kind === "confirm"
+        ? Check
+        : kind === "retry"
+          ? RotateCcw
+          : kind === "delete" || kind === "delete-all"
+            ? Trash2
+            : X;
+  const isGhost = kind === "reject" || kind === "reject-all" || kind === "delete" || kind === "delete-all";
 
   return (
-    <button className={kind === "reject" || kind === "reject-all" ? "ghost-button" : "secondary-button"} type="submit" disabled={pending} aria-busy={pending}>
+    <button className={isGhost ? "ghost-button" : "secondary-button"} type="submit" disabled={pending} aria-busy={pending}>
       <Icon className={pending ? "spin" : undefined} size={18} aria-hidden="true" />
       {children}
     </button>
@@ -89,23 +100,45 @@ export function RejectAllPendingImportsControl() {
   );
 }
 
+export function DeleteAllResolvedImportsControl() {
+  const [state, action] = useActionState(deleteAllResolvedImportsAction, initialState);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (state.status === "success") {
+      router.refresh();
+    }
+  }, [router, state.status, state.timestamp]);
+
+  return (
+    <div className="action-stack inline-action">
+      <form action={action}>
+        <Button kind="delete-all">Delete failed/skipped</Button>
+      </form>
+      <ActionStatus state={state} />
+    </div>
+  );
+}
+
 export function ImportBatchActions({ batchId, status }: { batchId: string; status: string }) {
   const [confirmState, confirmAction] = useActionState(confirmImportAction, initialState);
   const [rejectState, rejectAction] = useActionState(rejectImportAction, initialState);
   const [retryState, retryAction] = useActionState(retryImportParseAction, initialState);
+  const [deleteState, deleteAction] = useActionState(deleteImportAction, initialState);
   const router = useRouter();
   const canConfirm = status === "PENDING_REVIEW";
   const canRetry = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
   const canReject = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
-  const visibleState = [confirmState, retryState, rejectState].find((state) => state.status !== "idle") ?? initialState;
+  const canDelete = status === "FAILED" || status === "SKIPPED";
+  const visibleState = [confirmState, retryState, rejectState, deleteState].find((state) => state.status !== "idle") ?? initialState;
 
   useEffect(() => {
-    if (confirmState.status === "success" || rejectState.status === "success" || retryState.status === "success") {
+    if (confirmState.status === "success" || rejectState.status === "success" || retryState.status === "success" || deleteState.status === "success") {
       router.refresh();
     }
-  }, [confirmState.status, rejectState.status, retryState.status, confirmState.timestamp, rejectState.timestamp, retryState.timestamp, router]);
+  }, [confirmState.status, rejectState.status, retryState.status, deleteState.status, confirmState.timestamp, rejectState.timestamp, retryState.timestamp, deleteState.timestamp, router]);
 
-  if (!canConfirm && !canRetry && !canReject) {
+  if (!canConfirm && !canRetry && !canReject && !canDelete) {
     return null;
   }
 
@@ -127,6 +160,12 @@ export function ImportBatchActions({ batchId, status }: { batchId: string; statu
         <form action={rejectAction}>
           <input type="hidden" name="batchId" value={batchId} />
           <Button kind="reject">Reject</Button>
+        </form>
+      ) : null}
+      {canDelete ? (
+        <form action={deleteAction}>
+          <input type="hidden" name="batchId" value={batchId} />
+          <Button kind="delete">Delete</Button>
         </form>
       ) : null}
       <ActionStatus state={visibleState} />
