@@ -784,3 +784,38 @@ export async function rejectAllPendingImportBatches(db: PrismaClient): Promise<{
 
   return { rejected: pending.length };
 }
+
+export async function deleteImportBatch(db: PrismaClient, batchId: string): Promise<{ deleted: boolean }> {
+  const batch = await db.importBatch.findUnique({ where: { id: batchId } });
+
+  if (!batch) {
+    throw new Error("Import batch not found.");
+  }
+
+  if (!["FAILED", "SKIPPED"].includes(batch.status)) {
+    throw new Error(`Import batch cannot be deleted from status ${batch.status}.`);
+  }
+
+  const linkedTransactions = await db.bankTransaction.count({ where: { importBatchId: batch.id } });
+  if (linkedTransactions > 0) {
+    throw new Error(`Import batch has ${linkedTransactions} linked transaction(s) and cannot be deleted.`);
+  }
+
+  await db.importBatch.delete({ where: { id: batch.id } });
+  return { deleted: true };
+}
+
+export async function deleteAllResolvedImportBatches(db: PrismaClient): Promise<{ deleted: number }> {
+  const resolved = await db.importBatch.findMany({ where: { status: { in: ["FAILED", "SKIPPED"] } } });
+  let deleted = 0;
+
+  for (const batch of resolved) {
+    const linkedTransactions = await db.bankTransaction.count({ where: { importBatchId: batch.id } });
+    if (linkedTransactions === 0) {
+      await db.importBatch.delete({ where: { id: batch.id } });
+      deleted += 1;
+    }
+  }
+
+  return { deleted };
+}

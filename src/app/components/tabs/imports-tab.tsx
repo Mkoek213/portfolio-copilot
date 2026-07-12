@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import type { DashboardData } from "../../dashboard-data";
-import { ImportBatchActions, ImportPreviewCategoryControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
+import { DeleteAllResolvedImportsControl, ImportBatchActions, ImportPreviewCategoryControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
 import { SchedulerNowControl } from "../maintenance-controls";
 import { PanelHeading, StatusChip, importStatusTone } from "../ui";
 
@@ -18,6 +18,7 @@ function parsedPreview(value: Prisma.JsonValue | null | undefined) {
 
 export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailState: string }) {
   const pendingCount = data.importBatches.filter((batch) => batch.status === "PENDING_REVIEW").length;
+  const hasResolvedImports = data.importBatches.some((batch) => batch.status === "FAILED" || batch.status === "SKIPPED");
 
   return (
     <section className="grid-2 grid-major">
@@ -33,6 +34,7 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
         <div className="review-actions inline-action">
           <SyncMbankControl />
           {pendingCount > 0 ? <RejectAllPendingImportsControl /> : null}
+          {hasResolvedImports ? <DeleteAllResolvedImportsControl /> : null}
         </div>
         <div className="import-list">
           {data.importBatches.map((batch) => {
