@@ -5,7 +5,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runPortfolioAnalysis } from "@/domain/workflows/run-analysis";
 import { LOCAL_RESOURCE_ID, defaultStrategy } from "@/domain/portfolio/strategy";
-import { confirmImportBatch, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "@/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "@/domain/imports/mbank-import-pipeline";
 import { writeImportObservation } from "@/domain/memory/observational-memory";
 import { runDailySchedulerTick } from "@/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "@/domain/retention/cleanup";
@@ -266,6 +266,33 @@ export async function rejectImportAction(_previousState: ActionResult, formData:
     return result("success", "Import rejected.", "The pending preview was marked as skipped.");
   } catch (error) {
     return result("error", "Import was not rejected.", error instanceof Error ? error.message : "Unknown import error.");
+  }
+}
+
+export async function rejectAllPendingImportsAction(_previousState: ActionResult, _formData: FormData): Promise<ActionResult> {
+  void _previousState;
+  void _formData;
+
+  try {
+    const { rejected } = await rejectAllPendingImportBatches(prisma);
+
+    if (rejected > 0) {
+      await writeImportObservation(prisma, {
+        resourceId: LOCAL_RESOURCE_ID,
+        topic: "import-rejected",
+        content: `Rejected ${rejected} pending import batch(es) in bulk.`,
+        priority: "LOW"
+      });
+    }
+
+    revalidatePath("/");
+    return result(
+      "success",
+      rejected > 0 ? `Rejected ${rejected} pending import${rejected === 1 ? "" : "s"}.` : "No pending imports to reject.",
+      rejected > 0 ? "The pending previews were marked as skipped." : undefined
+    );
+  } catch (error) {
+    return result("error", "Bulk reject failed.", error instanceof Error ? error.message : "Unknown import error.");
   }
 }
 

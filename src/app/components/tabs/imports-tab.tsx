@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import type { DashboardData } from "../../dashboard-data";
-import { ImportBatchActions, ImportPreviewCategoryControl, SyncMbankControl } from "../import-controls";
+import { ImportBatchActions, ImportPreviewCategoryControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
 import { SchedulerNowControl } from "../maintenance-controls";
 import { PanelHeading, StatusChip, importStatusTone } from "../ui";
 
@@ -17,6 +17,8 @@ function parsedPreview(value: Prisma.JsonValue | null | undefined) {
 }
 
 export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailState: string }) {
+  const pendingCount = data.importBatches.filter((batch) => batch.status === "PENDING_REVIEW").length;
+
   return (
     <section className="grid-2 grid-major">
       <div className="panel">
@@ -28,7 +30,10 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
           </div>
           <p>Manual Sync reads mBank daily notifications and monthly statement PDFs. A confirmed statement is authoritative for its month and replaces any daily entries in that period. OAuth and Gmail access stay user-run outside the app.</p>
         </div>
-        <SyncMbankControl />
+        <div className="review-actions inline-action">
+          <SyncMbankControl />
+          {pendingCount > 0 ? <RejectAllPendingImportsControl /> : null}
+        </div>
         <div className="import-list">
           {data.importBatches.map((batch) => {
             const isStatement = batch.provider === "MBANK_STATEMENT";

@@ -771,3 +771,16 @@ export async function rejectImportBatch(db: PrismaClient, batchId: string): Prom
     data: { status: "SKIPPED" }
   });
 }
+
+export async function rejectAllPendingImportBatches(db: PrismaClient): Promise<{ rejected: number }> {
+  const pending = await db.importBatch.findMany({ where: { status: "PENDING_REVIEW" } });
+
+  for (const batch of pending) {
+    await db.importBatch.update({
+      where: { id: batch.id },
+      data: { status: "SKIPPED" }
+    });
+  }
+
+  return { rejected: pending.length };
+}

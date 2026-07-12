@@ -22,7 +22,7 @@ import {
   validateOfficialGmailMcpEndpoint,
   type GmailMessageSummary
 } from "../src/domain/imports/gmail-mcp-adapter";
-import { confirmImportBatch, createImportDedupeKey, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, createImportDedupeKey, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
@@ -1136,6 +1136,24 @@ Numer referencyjny maila: X.
       const secondSync = await syncMbankGmail(db, { adapter, traceId: "test-sync-2", categorize: deterministicCategorize });
       assert.equal(secondSync.duplicates, 1);
       assert.equal(state.batches.length, 1);
+    }
+  },
+  {
+    name: "rejectAllPendingImportBatches rejects only pending-review batches",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      await db.importBatch.create({ data: { gmailMessageId: "msg-a", status: "PENDING_REVIEW" } });
+      await db.importBatch.create({ data: { gmailMessageId: "msg-b", status: "PENDING_REVIEW" } });
+      await db.importBatch.create({ data: { gmailMessageId: "msg-c", status: "IMPORTED" } });
+
+      const { rejected } = await rejectAllPendingImportBatches(db);
+      assert.equal(rejected, 2);
+      assert.equal(state.batches.filter((batch) => batch.status === "SKIPPED").length, 2);
+      assert.equal(state.batches.find((batch) => batch.gmailMessageId === "msg-c")?.status, "IMPORTED");
+
+      const secondRun = await rejectAllPendingImportBatches(db);
+      assert.equal(secondRun.rejected, 0);
     }
   },
   {
