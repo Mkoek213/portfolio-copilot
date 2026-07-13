@@ -8,7 +8,8 @@ import { PanelHeading, StatusChip, importStatusTone } from "../ui";
 type PreviewTransaction = Record<string, unknown> & {
   description: string;
   amount: number;
-  included: boolean;
+  reviewStatus: "PENDING" | "ACCEPTED" | "REJECTED";
+  transactionIndex: number;
 };
 
 function parsedPreview(value: Prisma.JsonValue | null | undefined): PreviewTransaction[] {
@@ -17,11 +18,22 @@ function parsedPreview(value: Prisma.JsonValue | null | undefined): PreviewTrans
   }
 
   return value
-    .map((item) => item as Record<string, unknown>)
-    .filter((item): item is Record<string, unknown> & { description: string; amount: number } =>
+    .map((item, transactionIndex): Record<string, unknown> & { transactionIndex: number } => ({
+      ...(item as Record<string, unknown>),
+      transactionIndex
+    }))
+    .filter((item): item is Record<string, unknown> & { description: string; amount: number; transactionIndex: number } =>
       typeof item.description === "string" && typeof item.amount === "number"
     )
-    .map((item) => ({ ...item, included: item.included !== false }));
+    .map((item) => ({
+      ...item,
+      reviewStatus:
+        item.reviewStatus === "ACCEPTED" || item.reviewStatus === "REJECTED" || item.reviewStatus === "PENDING"
+          ? item.reviewStatus
+          : item.included === false
+            ? "REJECTED"
+            : "PENDING"
+    }));
 }
 
 export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailState: string }) {
@@ -50,8 +62,9 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
           {data.importBatches.map((batch) => {
             const isStatement = batch.provider === "MBANK_STATEMENT";
             const preview = parsedPreview(batch.parsedTransactions);
-            const includedCount = preview.filter((item) => item.included).length;
-            const rejectedCount = preview.length - includedCount;
+            const pendingPreview = preview.filter((item) => item.reviewStatus === "PENDING");
+            const acceptedCount = preview.filter((item) => item.reviewStatus === "ACCEPTED").length;
+            const rejectedCount = preview.filter((item) => item.reviewStatus === "REJECTED").length;
             const periodLabel =
               isStatement && batch.periodStart && batch.periodEnd
                 ? `${formatDate(batch.periodStart)} - ${formatDate(batch.periodEnd)}`
@@ -69,22 +82,24 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
                 <StatusChip tone={importStatusTone(batch.status)} label={batch.status.toLowerCase().replace("_", " ")} />
               </div>
               {batch.errorMessage ? <p className="error-copy">{batch.errorMessage}</p> : null}
-              <ImportBatchActions batchId={batch.id} status={batch.status} />
+              <ImportBatchActions batchId={batch.id} status={batch.status} pendingTransactions={pendingPreview.length} acceptedTransactions={acceptedCount} />
               {batch.status === "PENDING_REVIEW" ? (
                 <div className="preview-shell">
                   <div className="preview-summary">
-                    <strong>{includedCount} accepted</strong>
+                    <strong>{pendingPreview.length} pending</strong>
+                    <span>{acceptedCount} accepted</span>
                     <span>{rejectedCount} rejected</span>
                   </div>
-                  <div className="preview-list" tabIndex={0} aria-label={`Import transactions: ${includedCount} accepted, ${rejectedCount} rejected`}>
-                    {preview.map((item, index) => (
-                      <div className={`preview-row${item.included ? "" : " is-rejected"}`} key={`${batch.id}-${index}`}>
-                        <ImportPreviewCategoryControl batchId={batch.id} transactionIndex={index} category={String(item.category)} />
-                        <ImportPreviewReviewControl batchId={batch.id} transactionIndex={index} included={Boolean(item.included)} />
+                  <div className="preview-list" tabIndex={0} aria-label={`Import transactions: ${pendingPreview.length} pending, ${acceptedCount} accepted, ${rejectedCount} rejected`}>
+                    {pendingPreview.map((item) => (
+                      <div className="preview-row" key={`${batch.id}-${item.transactionIndex}`}>
+                        <ImportPreviewCategoryControl batchId={batch.id} transactionIndex={item.transactionIndex} category={String(item.category)} />
+                        <ImportPreviewReviewControl batchId={batch.id} transactionIndex={item.transactionIndex} />
                         <strong>{String(item.description)}</strong>
                         <span>{formatMoney(Number(item.amount), String(item.currency ?? "PLN"))}</span>
                       </div>
                     ))}
+                    {pendingPreview.length === 0 ? <p className="empty-state">All transactions reviewed.</p> : null}
                   </div>
                 </div>
               ) : null}

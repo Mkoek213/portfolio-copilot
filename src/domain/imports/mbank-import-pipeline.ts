@@ -73,6 +73,8 @@ export type MbankRetryParseResult = {
   message: string;
 };
 
+type ImportPreviewReviewStatus = "PENDING" | "ACCEPTED" | "REJECTED";
+
 type StoredParsedTransaction = {
   operationDate: string;
   bookingDate?: string | null;
@@ -82,6 +84,7 @@ type StoredParsedTransaction = {
   description: string;
   merchant: string | null;
   category: string;
+  reviewStatus?: ImportPreviewReviewStatus;
   included?: boolean;
   accountLabel?: string | null;
   balanceAfter?: number | null;
@@ -113,7 +116,7 @@ function toStoredTransaction(transaction: ParsedMbankTransaction): StoredParsedT
     description: transaction.description,
     merchant: transaction.merchant,
     category: transaction.category,
-    included: true,
+    reviewStatus: "PENDING",
     accountLabel: transaction.accountLabel ?? null,
     balanceAfter: transaction.balanceAfter ?? null
   };
@@ -137,7 +140,12 @@ function storedTransactions(value: Prisma.JsonValue | null | undefined): StoredP
 
   return transactions.map((transaction) => ({
     ...transaction,
-    included: transaction.included !== false
+    reviewStatus:
+      transaction.reviewStatus === "ACCEPTED" || transaction.reviewStatus === "REJECTED" || transaction.reviewStatus === "PENDING"
+        ? transaction.reviewStatus
+        : transaction.included === false
+          ? "REJECTED"
+          : "PENDING"
   }));
 }
 
@@ -745,11 +753,11 @@ export async function updateImportPreviewTransactionCategory(
   });
 }
 
-export async function updateImportPreviewTransactionInclusion(
+export async function updateImportPreviewTransactionReview(
   db: PrismaClient,
   batchId: string,
   transactionIndex: number,
-  included: boolean
+  reviewStatus: Exclude<ImportPreviewReviewStatus, "PENDING">
 ): Promise<ImportBatch> {
   if (!Number.isInteger(transactionIndex) || transactionIndex < 0) {
     throw new Error("Invalid import preview transaction index.");
@@ -771,7 +779,7 @@ export async function updateImportPreviewTransactionInclusion(
   }
 
   const parsedTransactions = parsed.map((transaction, index) =>
-    index === transactionIndex ? { ...transaction, included } : transaction
+    index === transactionIndex ? { ...transaction, reviewStatus } : transaction
   );
 
   return db.importBatch.update({
@@ -819,7 +827,13 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
     throw new Error("Import batch has no parsed transactions to confirm.");
   }
 
-  const includedTransactions = parsed.filter((transaction) => transaction.included !== false);
+  const pendingTransactions = parsed.filter((transaction) => transaction.reviewStatus === "PENDING");
+
+  if (pendingTransactions.length > 0) {
+    throw new Error(`Import batch still has ${pendingTransactions.length} transaction(s) to review.`);
+  }
+
+  const includedTransactions = parsed.filter((transaction) => transaction.reviewStatus === "ACCEPTED");
 
   if (includedTransactions.length === 0) {
     throw new Error("Import batch has no accepted transactions. Accept at least one transaction or reject the batch.");

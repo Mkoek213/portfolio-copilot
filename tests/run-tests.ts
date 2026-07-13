@@ -22,7 +22,7 @@ import {
   validateOfficialGmailMcpEndpoint,
   type GmailMessageSummary
 } from "../src/domain/imports/gmail-mcp-adapter";
-import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionInclusion } from "../src/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionReview } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
@@ -1126,7 +1126,7 @@ Numer referencyjny maila: X.
       assert.equal(state.batches[0]?.status, "PENDING_REVIEW");
 
       const updatedPreview = await updateImportPreviewTransactionCategory(db, String(state.batches[0]?.id), 0, "people_transfers");
-      const updatedPreviewTransactions = updatedPreview.parsedTransactions as Array<{ category: string; included?: boolean }>;
+      const updatedPreviewTransactions = updatedPreview.parsedTransactions as Array<{ category: string; reviewStatus?: string }>;
       assert.equal(updatedPreviewTransactions[0]?.category, "people_transfers");
 
       const acceptedPreview = updatedPreviewTransactions[0]!;
@@ -1138,11 +1138,14 @@ Numer referencyjny maila: X.
         }
       });
 
-      const rejectedPreview = await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, false);
-      assert.equal((rejectedPreview.parsedTransactions as Array<{ included?: boolean }>)[1]?.included, false);
-      const acceptedAgain = await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, true);
-      assert.equal((acceptedAgain.parsedTransactions as Array<{ included?: boolean }>)[1]?.included, true);
-      await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, false);
+      await assert.rejects(() => confirmImportBatch(db, String(state.batches[0]?.id)), /still has 2 transaction\(s\) to review/i);
+
+      const rejectedPreview = await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 1, "REJECTED");
+      assert.equal((rejectedPreview.parsedTransactions as Array<{ reviewStatus?: string }>)[1]?.reviewStatus, "REJECTED");
+      const acceptedAgain = await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 1, "ACCEPTED");
+      assert.equal((acceptedAgain.parsedTransactions as Array<{ reviewStatus?: string }>)[1]?.reviewStatus, "ACCEPTED");
+      await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 1, "REJECTED");
+      await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 0, "ACCEPTED");
 
       const confirmed = await confirmImportBatch(db, String(state.batches[0]?.id));
       assert.equal(confirmed.created, 1);
@@ -1343,7 +1346,8 @@ Numer referencyjny maila: X.
             direction: transaction.direction,
             description: transaction.description,
             merchant: transaction.merchant,
-            category: transaction.category
+            category: transaction.category,
+            reviewStatus: "ACCEPTED"
           }))
         }
       });
@@ -1392,7 +1396,8 @@ Numer referencyjny maila: X.
               direction: "INFLOW",
               description: "PRZELEW",
               merchant: "MONIKA",
-              category: "people_transfers"
+              category: "people_transfers",
+              reviewStatus: "ACCEPTED"
             }
           ]
         }

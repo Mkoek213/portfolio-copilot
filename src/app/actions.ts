@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { runPortfolioAnalysis } from "@/domain/workflows/run-analysis";
 import { LOCAL_RESOURCE_ID, defaultStrategy } from "@/domain/portfolio/strategy";
 import { mbankSyncModeLabel } from "@/domain/imports/mbank-sync-mode";
-import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionInclusion } from "@/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionReview } from "@/domain/imports/mbank-import-pipeline";
 import { writeImportObservation } from "@/domain/memory/observational-memory";
 import { ensureSchedulerState, runDailySchedulerTick } from "@/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "@/domain/retention/cleanup";
@@ -406,21 +406,21 @@ export async function updateImportPreviewCategoryAction(_previousState: ActionRe
   }
 }
 
-export async function updateImportPreviewInclusionAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+export async function updateImportPreviewReviewAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
   void _previousState;
 
   try {
     const batchId = formString(formData, "batchId");
     const transactionIndex = Number(formString(formData, "transactionIndex"));
-    const included = formString(formData, "included");
+    const reviewStatus = formString(formData, "reviewStatus");
 
-    if (!batchId || !Number.isInteger(transactionIndex) || (included !== "true" && included !== "false")) {
+    if (!batchId || !Number.isInteger(transactionIndex) || (reviewStatus !== "ACCEPTED" && reviewStatus !== "REJECTED")) {
       return result("error", "Transaction review was not saved.", "Missing import batch, transaction index or review decision.");
     }
 
-    await updateImportPreviewTransactionInclusion(prisma, batchId, transactionIndex, included === "true");
+    await updateImportPreviewTransactionReview(prisma, batchId, transactionIndex, reviewStatus);
     revalidatePath("/");
-    return result("success", included === "true" ? "Transaction accepted." : "Transaction rejected.");
+    return result("success", reviewStatus === "ACCEPTED" ? "Transaction accepted." : "Transaction rejected.");
   } catch (error) {
     return result("error", "Transaction review was not saved.", error instanceof Error ? error.message : "Unknown transaction review error.");
   }
