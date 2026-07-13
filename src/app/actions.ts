@@ -418,9 +418,14 @@ export async function updateImportPreviewReviewAction(_previousState: ActionResu
       return result("error", "Transaction review was not saved.", "Missing import batch, transaction index or review decision.");
     }
 
-    await updateImportPreviewTransactionReview(prisma, batchId, transactionIndex, reviewStatus);
+    const batch = await updateImportPreviewTransactionReview(prisma, batchId, transactionIndex, reviewStatus);
     revalidatePath("/");
-    return result("success", reviewStatus === "ACCEPTED" ? "Transaction accepted." : "Transaction rejected.");
+    const completed = batch.status === "IMPORTED" || batch.status === "SKIPPED";
+    return result(
+      "success",
+      reviewStatus === "ACCEPTED" ? "Transaction accepted and imported." : "Transaction rejected.",
+      completed ? "All transactions in this import have been reviewed." : undefined
+    );
   } catch (error) {
     return result("error", "Transaction review was not saved.", error instanceof Error ? error.message : "Unknown transaction review error.");
   }

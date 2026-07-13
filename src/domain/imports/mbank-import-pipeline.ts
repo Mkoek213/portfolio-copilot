@@ -763,28 +763,43 @@ export async function updateImportPreviewTransactionReview(
     throw new Error("Invalid import preview transaction index.");
   }
 
-  const batch = await db.importBatch.findUnique({ where: { id: batchId } });
+  return db.$transaction(async (tx) => {
+    const batch = await tx.importBatch.findUnique({ where: { id: batchId } });
 
-  if (!batch) {
-    throw new Error("Import batch not found.");
-  }
+    if (!batch) {
+      throw new Error("Import batch not found.");
+    }
 
-  if (batch.status !== "PENDING_REVIEW") {
-    throw new Error(`Import preview cannot be changed from status ${batch.status}.`);
-  }
+    if (batch.status !== "PENDING_REVIEW") {
+      throw new Error(`Import preview cannot be changed from status ${batch.status}.`);
+    }
 
-  const parsed = storedTransactions(batch.parsedTransactions);
-  if (!parsed[transactionIndex]) {
-    throw new Error("Import preview transaction not found.");
-  }
+    const parsed = storedTransactions(batch.parsedTransactions);
+    const reviewedTransaction = parsed[transactionIndex];
+    if (!reviewedTransaction) {
+      throw new Error("Import preview transaction not found.");
+    }
 
-  const parsedTransactions = parsed.map((transaction, index) =>
-    index === transactionIndex ? { ...transaction, reviewStatus } : transaction
-  );
+    if (reviewedTransaction.reviewStatus !== "PENDING" && reviewedTransaction.reviewStatus !== reviewStatus) {
+      throw new Error("Import preview transaction has already been reviewed.");
+    }
 
-  return db.importBatch.update({
-    where: { id: batch.id },
-    data: { parsedTransactions: parsedTransactions as Prisma.InputJsonValue }
+    const parsedTransactions = parsed.map((transaction, index) =>
+      index === transactionIndex ? { ...transaction, reviewStatus } : transaction
+    );
+    const materialized = await materializeAcceptedTransactions(tx, batch, parsedTransactions);
+    const pendingCount = parsedTransactions.filter((transaction) => transaction.reviewStatus === "PENDING").length;
+    const acceptedCount = parsedTransactions.filter((transaction) => transaction.reviewStatus === "ACCEPTED").length;
+    const status = pendingCount > 0 ? "PENDING_REVIEW" : acceptedCount > 0 ? "IMPORTED" : "SKIPPED";
+
+    return tx.importBatch.update({
+      where: { id: batch.id },
+      data: {
+        parsedTransactions: parsedTransactions as Prisma.InputJsonValue,
+        status,
+        transactionCount: status === "PENDING_REVIEW" ? batch.transactionCount : materialized.created
+      }
+    });
   });
 }
 
@@ -801,8 +816,81 @@ export async function updateBankTransactionCategory(
   });
 }
 
+function transactionRows(batch: ImportBatch, parsed: StoredParsedTransaction[]) {
+  const source = batch.provider === "MBANK_STATEMENT" ? ("STATEMENT" as const) : ("EMAIL" as const);
+
+  return parsed
+    .filter((transaction) => transaction.reviewStatus === "ACCEPTED")
+    .map((transaction) => ({
+      importBatchId: batch.id,
+      provider: "MBANK" as const,
+      source,
+      operationDate: new Date(transaction.operationDate),
+      bookingDate: transaction.bookingDate ? new Date(transaction.bookingDate) : null,
+      amount: transaction.amount,
+      currency: transaction.currency,
+      direction: transaction.direction,
+      description: transaction.description,
+      merchant: transaction.merchant,
+      category: transaction.category,
+      accountLabel: transaction.accountLabel ?? null,
+      balanceAfter: transaction.balanceAfter ?? null
+    }));
+}
+
+async function materializeAcceptedTransactions(
+  tx: Prisma.TransactionClient,
+  batch: ImportBatch,
+  parsed: StoredParsedTransaction[]
+) {
+  const isStatement = batch.provider === "MBANK_STATEMENT";
+
+  if (isStatement && (!batch.periodStart || !batch.periodEnd)) {
+    throw new Error("Statement import batch is missing its period range.");
+  }
+
+  let rows = transactionRows(batch, parsed);
+  let supersededCount = 0;
+
+  if (isStatement && rows.length > 0 && batch.periodStart && batch.periodEnd) {
+    const periodWhere = {
+      bookingDate: { gte: batch.periodStart, lte: batch.periodEnd },
+      NOT: { importBatchId: batch.id }
+    };
+    const superseded = await tx.bankTransaction.findMany({ where: periodWhere, select: { importBatchId: true } });
+    supersededCount = superseded.length;
+
+    await tx.bankTransaction.deleteMany({ where: periodWhere });
+
+    const affectedBatchIds = [...new Set(superseded.map((row) => row.importBatchId))];
+    for (const affectedId of affectedBatchIds) {
+      const remaining = await tx.bankTransaction.count({ where: { importBatchId: affectedId } });
+      await tx.importBatch.update({ where: { id: affectedId }, data: { transactionCount: remaining } });
+    }
+  }
+
+  if (!isStatement && rows.length > 0) {
+    const statementPeriods = await tx.importBatch.findMany({
+      where: { provider: "MBANK_STATEMENT", status: "IMPORTED", periodStart: { not: null }, periodEnd: { not: null } },
+      select: { periodStart: true, periodEnd: true }
+    });
+
+    rows = rows.filter((row) => {
+      const bookedAt = row.bookingDate ?? row.operationDate;
+      return !statementPeriods.some((period) => period.periodStart! <= bookedAt && bookedAt <= period.periodEnd!);
+    });
+  }
+
+  await tx.bankTransaction.deleteMany({ where: { importBatchId: batch.id } });
+  if (rows.length > 0) {
+    await tx.bankTransaction.createMany({ data: rows });
+  }
+
+  return { created: rows.length, superseded: supersededCount };
+}
+
 export async function confirmImportBatch(db: PrismaClient, batchId: string) {
-  const batch = await db.importBatch.findUnique({ where: { id: batchId }, include: { transactions: true } });
+  const batch = await db.importBatch.findUnique({ where: { id: batchId } });
 
   if (!batch) {
     throw new Error("Import batch not found.");
@@ -814,11 +902,6 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
 
   if (batch.status !== "PENDING_REVIEW") {
     throw new Error(`Import batch cannot be confirmed from status ${batch.status}.`);
-  }
-
-  if (batch.transactions.length > 0) {
-    await db.importBatch.update({ where: { id: batch.id }, data: { status: "IMPORTED" } });
-    return { status: "already_imported" as const, created: 0, batch };
   }
 
   const parsed = storedTransactions(batch.parsedTransactions);
@@ -839,79 +922,18 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
     throw new Error("Import batch has no accepted transactions. Accept at least one transaction or reject the batch.");
   }
 
-  const isStatement = batch.provider === "MBANK_STATEMENT";
-  const source = isStatement ? ("STATEMENT" as const) : ("EMAIL" as const);
-
-  if (isStatement && (!batch.periodStart || !batch.periodEnd)) {
-    throw new Error("Statement import batch is missing its period range.");
-  }
-
-  const rows = includedTransactions.map((transaction) => ({
-    importBatchId: batch.id,
-    provider: "MBANK" as const,
-    source,
-    operationDate: new Date(transaction.operationDate),
-    bookingDate: transaction.bookingDate ? new Date(transaction.bookingDate) : null,
-    amount: transaction.amount,
-    currency: transaction.currency,
-    direction: transaction.direction,
-    description: transaction.description,
-    merchant: transaction.merchant,
-    category: transaction.category,
-    accountLabel: transaction.accountLabel ?? null,
-    balanceAfter: transaction.balanceAfter ?? null
-  }));
-
-  // A monthly statement owns its whole period, so a daily-notification import must
-  // not re-add transactions for a period an imported statement already covers.
-  let effectiveRows = rows;
-  if (!isStatement) {
-    const statementPeriods = await db.importBatch.findMany({
-      where: { provider: "MBANK_STATEMENT", status: "IMPORTED", periodStart: { not: null }, periodEnd: { not: null } },
-      select: { periodStart: true, periodEnd: true }
-    });
-
-    if (statementPeriods.length > 0) {
-      effectiveRows = rows.filter((row) => {
-        const bookedAt = row.bookingDate ?? row.operationDate;
-        return !statementPeriods.some((period) => period.periodStart! <= bookedAt && bookedAt <= period.periodEnd!);
-      });
-    }
-  }
-
   const updated = await db.$transaction(async (tx) => {
-    let supersededCount = 0;
-
-    if (isStatement && batch.periodStart && batch.periodEnd) {
-      // The statement is the authoritative record for its period: replace any
-      // transactions already booked in that range (daily-notification imports or
-      // a previous copy of this statement) so nothing is double-counted.
-      const periodWhere = { bookingDate: { gte: batch.periodStart, lte: batch.periodEnd } };
-      const superseded = await tx.bankTransaction.findMany({ where: periodWhere, select: { importBatchId: true } });
-      supersededCount = superseded.length;
-
-      await tx.bankTransaction.deleteMany({ where: periodWhere });
-
-      const affectedBatchIds = [...new Set(superseded.map((row) => row.importBatchId))].filter((id) => id !== batch.id);
-      for (const affectedId of affectedBatchIds) {
-        const remaining = await tx.bankTransaction.count({ where: { importBatchId: affectedId } });
-        await tx.importBatch.update({ where: { id: affectedId }, data: { transactionCount: remaining } });
-      }
-    }
-
-    if (effectiveRows.length > 0) {
-      await tx.bankTransaction.createMany({ data: effectiveRows });
-    }
+    const materialized = await materializeAcceptedTransactions(tx, batch, parsed);
 
     const nextBatch = await tx.importBatch.update({
       where: { id: batch.id },
-      data: { status: "IMPORTED", transactionCount: effectiveRows.length }
+      data: { status: "IMPORTED", transactionCount: materialized.created }
     });
 
-    return { batch: nextBatch, supersededCount };
+    return { batch: nextBatch, ...materialized };
   });
 
-  return { status: "imported" as const, created: effectiveRows.length, superseded: updated.supersededCount, batch: updated.batch };
+  return { status: "imported" as const, created: updated.created, superseded: updated.superseded, batch: updated.batch };
 }
 
 export async function rejectImportBatch(db: PrismaClient, batchId: string): Promise<ImportBatch> {
