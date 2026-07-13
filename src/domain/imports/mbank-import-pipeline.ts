@@ -1,4 +1,4 @@
-import { Prisma, type BankTransaction, type ImportBatch, type PrismaClient } from "@prisma/client";
+import { Prisma, type BankTransaction, type ImportBatch, type MbankSyncMode, type PrismaClient } from "@prisma/client";
 import {
   readGmailMessage,
   readGmailPdfAttachments,
@@ -12,6 +12,7 @@ import { MbankStatementParseError, parseMbankStatementPdf, type ParsedMbankState
 import { categorizeTransactionsWithLlm, type CategorizableTransaction } from "./llm-categorizer";
 import { EXPENSE_CATEGORIES, isExpenseCategory } from "@/domain/portfolio/categories";
 import { recordTraceWarning, traceStep } from "@/domain/tracing/local-tracing";
+import { mbankSyncModeLabel } from "./mbank-sync-mode";
 
 const RESOURCE_ID = "local-user";
 
@@ -81,6 +82,7 @@ type StoredParsedTransaction = {
   description: string;
   merchant: string | null;
   category: string;
+  included?: boolean;
   accountLabel?: string | null;
   balanceAfter?: number | null;
 };
@@ -111,6 +113,7 @@ function toStoredTransaction(transaction: ParsedMbankTransaction): StoredParsedT
     description: transaction.description,
     merchant: transaction.merchant,
     category: transaction.category,
+    included: true,
     accountLabel: transaction.accountLabel ?? null,
     balanceAfter: transaction.balanceAfter ?? null
   };
@@ -121,7 +124,7 @@ function storedTransactions(value: Prisma.JsonValue | null | undefined): StoredP
     return [];
   }
 
-  return value.filter((item): item is StoredParsedTransaction => {
+  const transactions = value.filter((item): item is StoredParsedTransaction => {
     const candidate = item as Partial<StoredParsedTransaction>;
     return (
       typeof candidate.operationDate === "string" &&
@@ -131,6 +134,11 @@ function storedTransactions(value: Prisma.JsonValue | null | undefined): StoredP
       typeof candidate.category === "string"
     );
   });
+
+  return transactions.map((transaction) => ({
+    ...transaction,
+    included: transaction.included !== false
+  }));
 }
 
 function assertSupportedCategory(category: string) {
@@ -377,14 +385,24 @@ async function processStatementMessage(
   );
 }
 
+function shouldProcessForSyncMode(message: Pick<GmailMessageBody, "subject">, syncMode: MbankSyncMode) {
+  if (syncMode === "BOTH") {
+    return true;
+  }
+
+  return isStatementMessage(message) === (syncMode === "STATEMENT_ONLY");
+}
+
 export async function syncMbankGmail(
   db: PrismaClient,
-  options: { adapter?: GmailAdapter; traceId?: string; statementPassword?: string; categorize?: CategorizeTransactions } = {}
+  options: { adapter?: GmailAdapter; traceId?: string; statementPassword?: string; categorize?: CategorizeTransactions; syncMode?: MbankSyncMode } = {}
 ): Promise<MbankImportSyncResult> {
   const adapter = options.adapter ?? { searchMbankMessages, readGmailMessage, readGmailPdfAttachments };
   const traceId = options.traceId ?? `gmail-sync-${Date.now()}`;
   const statementPassword = options.statementPassword ?? statementPasswordFromEnv();
   const categorize = options.categorize ?? ((transactions) => categorizeTransactionsWithLlm(transactions));
+  const syncMode = options.syncMode ?? "BOTH";
+  const syncModeLabel = mbankSyncModeLabel(syncMode);
 
   let messages: GmailMessageSummary[];
 
@@ -410,7 +428,7 @@ export async function syncMbankGmail(
   if (messages.length === 0) {
     return {
       status: "no_new_messages",
-      message: "No new mBank Gmail messages found.",
+      message: `${syncModeLabel}: no new mBank Gmail messages found.`,
       created: 0,
       duplicates: 0,
       failed: 0,
@@ -422,12 +440,24 @@ export async function syncMbankGmail(
   let duplicates = 0;
   let failed = 0;
   let skipped = 0;
+  let matchingMessages = 0;
 
   for (const message of messages) {
+    let classifiedMessage = message;
+
     try {
       const fullMessage = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-sync.read", input: { id: message.id } }, () =>
         adapter.readGmailMessage(message)
       );
+      classifiedMessage = fullMessage;
+
+      // Gmail REST list results contain IDs only. Classify after messages.get so
+      // statement-only mode does not discard statements whose summary has no subject.
+      if (!shouldProcessForSyncMode(fullMessage, syncMode)) {
+        continue;
+      }
+
+      matchingMessages += 1;
 
       const result = isStatementMessage(fullMessage)
         ? await processStatementMessage(db, fullMessage, adapter, traceId, statementPassword, categorize)
@@ -461,7 +491,7 @@ export async function syncMbankGmail(
     } catch (error) {
       if (isNonTransactionMbankEmail(error)) {
         skipped += 1;
-        await createSkippedBatch(db, message, error);
+        await createSkippedBatch(db, classifiedMessage, error);
         await recordTraceWarning(db, {
           traceId,
           resourceId: RESOURCE_ID,
@@ -473,7 +503,7 @@ export async function syncMbankGmail(
       }
 
       failed += 1;
-      await createFailedBatch(db, message, error);
+      await createFailedBatch(db, classifiedMessage, error);
       await recordTraceWarning(db, {
         traceId,
         resourceId: RESOURCE_ID,
@@ -484,9 +514,20 @@ export async function syncMbankGmail(
     }
   }
 
+  if (matchingMessages === 0 && failed === 0) {
+    return {
+      status: "no_new_messages",
+      message: `${syncModeLabel}: no matching mBank Gmail messages found in the current search window.`,
+      created: 0,
+      duplicates: 0,
+      failed: 0,
+      skipped: 0
+    };
+  }
+
   return {
     status: "completed",
-    message: `Prepared ${created} import preview(s), skipped ${duplicates} duplicate(s), skipped ${skipped} non-transaction email(s), failed ${failed}.`,
+    message: `${syncModeLabel}: prepared ${created} import preview(s), skipped ${duplicates} duplicate(s), skipped ${skipped} non-transaction email(s), failed ${failed}.`,
     created,
     duplicates,
     failed,
@@ -704,6 +745,41 @@ export async function updateImportPreviewTransactionCategory(
   });
 }
 
+export async function updateImportPreviewTransactionInclusion(
+  db: PrismaClient,
+  batchId: string,
+  transactionIndex: number,
+  included: boolean
+): Promise<ImportBatch> {
+  if (!Number.isInteger(transactionIndex) || transactionIndex < 0) {
+    throw new Error("Invalid import preview transaction index.");
+  }
+
+  const batch = await db.importBatch.findUnique({ where: { id: batchId } });
+
+  if (!batch) {
+    throw new Error("Import batch not found.");
+  }
+
+  if (batch.status !== "PENDING_REVIEW") {
+    throw new Error(`Import preview cannot be changed from status ${batch.status}.`);
+  }
+
+  const parsed = storedTransactions(batch.parsedTransactions);
+  if (!parsed[transactionIndex]) {
+    throw new Error("Import preview transaction not found.");
+  }
+
+  const parsedTransactions = parsed.map((transaction, index) =>
+    index === transactionIndex ? { ...transaction, included } : transaction
+  );
+
+  return db.importBatch.update({
+    where: { id: batch.id },
+    data: { parsedTransactions: parsedTransactions as Prisma.InputJsonValue }
+  });
+}
+
 export async function updateBankTransactionCategory(
   db: PrismaClient,
   transactionId: string,
@@ -743,6 +819,12 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
     throw new Error("Import batch has no parsed transactions to confirm.");
   }
 
+  const includedTransactions = parsed.filter((transaction) => transaction.included !== false);
+
+  if (includedTransactions.length === 0) {
+    throw new Error("Import batch has no accepted transactions. Accept at least one transaction or reject the batch.");
+  }
+
   const isStatement = batch.provider === "MBANK_STATEMENT";
   const source = isStatement ? ("STATEMENT" as const) : ("EMAIL" as const);
 
@@ -750,7 +832,7 @@ export async function confirmImportBatch(db: PrismaClient, batchId: string) {
     throw new Error("Statement import batch is missing its period range.");
   }
 
-  const rows = parsed.map((transaction) => ({
+  const rows = includedTransactions.map((transaction) => ({
     importBatchId: batch.id,
     provider: "MBANK" as const,
     source,
