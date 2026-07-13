@@ -56,6 +56,12 @@ enum ImportProvider {
   MBANK_STATEMENT
 }
 
+enum MbankSyncMode {
+  DAILY_ONLY
+  STATEMENT_ONLY
+  BOTH
+}
+
 enum ImportSource {
   GMAIL_MCP
 }
@@ -423,16 +429,17 @@ model TraceSpan {
 }
 
 model SchedulerState {
-  id         String   @id @default(cuid())
-  name       String   @unique
-  enabled    Boolean  @default(true)
-  timeOfDay  String   @default("08:00")
-  timezone   String   @default("Europe/Warsaw")
-  running    Boolean  @default(false)
+  id         String        @id @default(cuid())
+  name       String        @unique
+  enabled    Boolean       @default(true)
+  timeOfDay  String        @default("08:00")
+  timezone   String        @default("Europe/Warsaw")
+  syncMode   MbankSyncMode @default(BOTH)
+  running    Boolean       @default(false)
   lastRunAt  DateTime?
   nextRunAt  DateTime?
   lastStatus String?
   lastError  String?
-  updatedAt  DateTime @updatedAt
+  updatedAt  DateTime      @updatedAt
 }
 
