@@ -1448,7 +1448,7 @@ a {
 }
 
 .preview-summary strong {
-  color: var(--good-text);
+  color: var(--warn-text);
   font-weight: 650;
 }
 
@@ -1471,16 +1471,6 @@ a {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
-}
-
-.preview-row.is-rejected {
-  border-color: rgba(176, 42, 42, 0.2);
-  background: var(--crit-soft);
-}
-
-.preview-row.is-rejected > strong {
-  color: var(--ink-3);
-  text-decoration: line-through;
 }
 
 .preview-review-control {
@@ -1507,13 +1497,13 @@ a {
   cursor: pointer;
 }
 
-.preview-review-button.accept.active {
+.preview-review-button.accept:hover:not(:disabled) {
   border-color: rgba(0, 99, 0, 0.28);
   background: var(--good-soft);
   color: var(--good-text);
 }
 
-.preview-review-button.reject.active {
+.preview-review-button.reject:hover:not(:disabled) {
   border-color: rgba(176, 42, 42, 0.28);
   background: var(--crit-soft);
   color: var(--crit-text);

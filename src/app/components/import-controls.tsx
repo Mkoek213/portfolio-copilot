@@ -1,13 +1,13 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { EXPENSE_CATEGORY_OPTIONS } from "@/domain/portfolio/categories";
 import { MBANK_SYNC_MODE_OPTIONS } from "@/domain/imports/mbank-sync-mode";
 import type { MbankSyncMode } from "@prisma/client";
-import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateImportPreviewInclusionAction, updateMbankSyncModeAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
+import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateImportPreviewReviewAction, updateMbankSyncModeAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
 const initialState: ActionResult = { status: "idle", message: "" };
@@ -20,16 +20,24 @@ function hasKnownCategory(category: string) {
 
 function CategorySelect({ category, label }: { category: string; label: string }) {
   const { pending } = useFormStatus();
+  const [value, setValue] = useState(category);
+
+  useEffect(() => {
+    setValue(category);
+  }, [category]);
 
   return (
     <select
       className="category-select"
       name="category"
-      defaultValue={category}
+      value={value}
       disabled={pending}
       aria-busy={pending}
       aria-label={label}
-      onChange={(event) => event.currentTarget.form?.requestSubmit()}
+      onChange={(event) => {
+        setValue(event.currentTarget.value);
+        event.currentTarget.form?.requestSubmit();
+      }}
     >
       {hasKnownCategory(category) ? null : <option value={category}>{category}</option>}
       {EXPENSE_CATEGORY_OPTIONS.map((option) => (
@@ -39,7 +47,7 @@ function CategorySelect({ category, label }: { category: string; label: string }
   );
 }
 
-function Button({ kind, children }: { kind: ImportActionKind; children: React.ReactNode }) {
+function Button({ kind, children, disabled = false, title }: { kind: ImportActionKind; children: React.ReactNode; disabled?: boolean; title?: string }) {
   const { pending } = useFormStatus();
   const Icon = pending
     ? Loader2
@@ -55,7 +63,7 @@ function Button({ kind, children }: { kind: ImportActionKind; children: React.Re
   const isGhost = kind === "reject" || kind === "reject-all" || kind === "delete" || kind === "delete-all";
 
   return (
-    <button className={isGhost ? "ghost-button" : "secondary-button"} type="submit" disabled={pending} aria-busy={pending}>
+    <button className={isGhost ? "ghost-button" : "secondary-button"} type="submit" disabled={pending || disabled} aria-busy={pending} title={title}>
       <Icon className={pending ? "spin" : undefined} size={18} aria-hidden="true" />
       {children}
     </button>
@@ -157,7 +165,17 @@ export function DeleteAllResolvedImportsControl() {
   );
 }
 
-export function ImportBatchActions({ batchId, status }: { batchId: string; status: string }) {
+export function ImportBatchActions({
+  batchId,
+  status,
+  pendingTransactions = 0,
+  acceptedTransactions = 0
+}: {
+  batchId: string;
+  status: string;
+  pendingTransactions?: number;
+  acceptedTransactions?: number;
+}) {
   const [confirmState, confirmAction] = useActionState(confirmImportAction, initialState);
   const [rejectState, rejectAction] = useActionState(rejectImportAction, initialState);
   const [retryState, retryAction] = useActionState(retryImportParseAction, initialState);
@@ -167,6 +185,8 @@ export function ImportBatchActions({ batchId, status }: { batchId: string; statu
   const canRetry = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
   const canReject = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
   const canDelete = status === "FAILED" || status === "SKIPPED";
+  const confirmDisabled = pendingTransactions > 0 || acceptedTransactions === 0;
+  const confirmTitle = pendingTransactions > 0 ? `Review ${pendingTransactions} remaining transaction(s) first` : acceptedTransactions === 0 ? "Accept at least one transaction first" : undefined;
   const visibleState = [confirmState, retryState, rejectState, deleteState].find((state) => state.status !== "idle") ?? initialState;
 
   useEffect(() => {
@@ -184,7 +204,7 @@ export function ImportBatchActions({ batchId, status }: { batchId: string; statu
       {canConfirm ? (
         <form action={confirmAction}>
           <input type="hidden" name="batchId" value={batchId} />
-          <Button kind="confirm">Confirm import</Button>
+          <Button kind="confirm" disabled={confirmDisabled} title={confirmTitle}>Confirm import</Button>
         </form>
       ) : null}
       {canRetry ? (
@@ -211,19 +231,18 @@ export function ImportBatchActions({ batchId, status }: { batchId: string; statu
 }
 
 
-function ReviewDecisionButton({ included, active, label }: { included: boolean; active: boolean; label: string }) {
+function ReviewDecisionButton({ reviewStatus, label }: { reviewStatus: "ACCEPTED" | "REJECTED"; label: string }) {
   const { pending } = useFormStatus();
-  const Icon = included ? Check : X;
+  const Icon = reviewStatus === "ACCEPTED" ? Check : X;
 
   return (
     <button
-      className={`preview-review-button ${included ? "accept" : "reject"}${active ? " active" : ""}`}
+      className={`preview-review-button ${reviewStatus === "ACCEPTED" ? "accept" : "reject"}`}
       type="submit"
-      name="included"
-      value={String(included)}
+      name="reviewStatus"
+      value={reviewStatus}
       disabled={pending}
       aria-busy={pending}
-      aria-pressed={active}
       aria-label={label}
       title={label}
     >
@@ -232,8 +251,8 @@ function ReviewDecisionButton({ included, active, label }: { included: boolean; 
   );
 }
 
-export function ImportPreviewReviewControl({ batchId, transactionIndex, included }: { batchId: string; transactionIndex: number; included: boolean }) {
-  const [state, action] = useActionState(updateImportPreviewInclusionAction, initialState);
+export function ImportPreviewReviewControl({ batchId, transactionIndex }: { batchId: string; transactionIndex: number }) {
+  const [state, action] = useActionState(updateImportPreviewReviewAction, initialState);
   const router = useRouter();
 
   useEffect(() => {
@@ -247,8 +266,8 @@ export function ImportPreviewReviewControl({ batchId, transactionIndex, included
       <form action={action}>
         <input type="hidden" name="batchId" value={batchId} />
         <input type="hidden" name="transactionIndex" value={transactionIndex} />
-        <ReviewDecisionButton included active={included} label="Accept transaction" />
-        <ReviewDecisionButton included={false} active={!included} label="Reject transaction" />
+        <ReviewDecisionButton reviewStatus="ACCEPTED" label="Accept transaction" />
+        <ReviewDecisionButton reviewStatus="REJECTED" label="Reject transaction" />
       </form>
       {state.status === "error" ? <ActionStatus state={state} /> : null}
     </div>
