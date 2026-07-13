@@ -1450,6 +1450,63 @@ Numer referencyjny maila: X.
     }
   },
   {
+    name: "createFailedBatch tags a failed statement email with the MBANK_STATEMENT provider",
+    async run() {
+      const { db, state } = createImportHarness();
+      const summary: GmailMessageSummary = {
+        id: "msg-statement-broken",
+        threadId: "thread-statement",
+        subject: "mBank - elektroniczne zestawienie operacji za czerwiec 2026",
+        sender: "mBank",
+        receivedAt: new Date("2026-07-01T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const brokenAdapter = {
+        searchMbankMessages: async () => [summary],
+        readGmailMessage: async () => ({ ...summary, bodyText: "irrelevant" }),
+        readGmailPdfAttachments: async () => []
+      };
+
+      const result = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "statement-fail-sync", categorize: deterministicCategorize });
+      assert.equal(result.failed, 1);
+      assert.equal(state.batches.length, 1);
+      assert.equal(state.batches[0]?.status, "FAILED");
+      assert.equal(state.batches[0]?.provider, "MBANK_STATEMENT");
+    }
+  },
+  {
+    name: "retryParseImportBatch retries a failed statement batch through the PDF path, not the email parser",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      const failed = await db.importBatch.create({
+        data: {
+          provider: "MBANK_STATEMENT",
+          gmailMessageId: "msg-statement-retry",
+          subject: "mBank - elektroniczne zestawienie operacji za czerwiec 2026",
+          status: "FAILED",
+          errorMessage: "Could not open the mBank statement PDF: Setting up fake worker failed."
+        }
+      });
+      const message = { id: failed.gmailMessageId, threadId: null, subject: failed.subject, sender: null, receivedAt: null, bodyText: "irrelevant" };
+
+      const noAdapterRetry = await retryParseImportBatch(db, failed.id, {
+        adapter: { readGmailMessage: async () => message },
+        traceId: "statement-retry-no-adapter"
+      });
+      assert.equal(noAdapterRetry.status, "failed");
+      assert.match(noAdapterRetry.message, /cannot read PDF attachments/);
+      assert.equal(state.batches[0]?.status, "FAILED");
+
+      const noPdfRetry = await retryParseImportBatch(db, failed.id, {
+        adapter: { readGmailMessage: async () => message, readGmailPdfAttachments: async () => [] },
+        traceId: "statement-retry-no-pdf"
+      });
+      assert.equal(noPdfRetry.status, "failed");
+      assert.match(noPdfRetry.message, /no PDF attachment/);
+    }
+  },
+  {
     name: "mBank import dedupe key is provider Gmail message and operation date",
     run() {
       const keyA = createImportDedupeKey({ provider: "MBANK_EMAIL", gmailMessageId: "abc", operationDate: new Date("2026-07-02T00:00:00.000Z") });

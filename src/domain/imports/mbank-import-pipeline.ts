@@ -28,8 +28,6 @@ type GmailAdapter = {
   readGmailPdfAttachments?: (message: GmailMessageSummary) => Promise<GmailPdfAttachment[]>;
 };
 
-type GmailReadAdapter = Pick<GmailAdapter, "readGmailMessage">;
-
 // Assigns a category to each parsed transaction. Defaults to the local LLM
 // (with a deterministic keyword fallback); injectable so tests stay offline.
 export type CategorizeTransactions = (transactions: CategorizableTransaction[]) => Promise<ParsedMbankTransaction["category"][]>;
@@ -195,9 +193,10 @@ async function createSkippedBatch(db: PrismaClient, message: GmailMessageSummary
 
 async function createFailedBatch(db: PrismaClient, message: GmailMessageSummary, error: unknown) {
   const errorMessage = safeErrorMessage(error);
+  const provider = isStatementMessage(message) ? "MBANK_STATEMENT" : "MBANK_EMAIL";
   const existing = await db.importBatch.findFirst({
     where: {
-      provider: "MBANK_EMAIL",
+      provider,
       gmailMessageId: message.id,
       operationDate: null
     },
@@ -222,7 +221,7 @@ async function createFailedBatch(db: PrismaClient, message: GmailMessageSummary,
 
   return db.importBatch.create({
     data: {
-      provider: "MBANK_EMAIL",
+      provider,
       source: "GMAIL_MCP",
       gmailMessageId: message.id,
       gmailThreadId: message.threadId ?? null,
@@ -326,7 +325,7 @@ async function createPendingStatementBatch(db: PrismaClient, message: GmailMessa
   return { created: true as const, batch };
 }
 
-function isStatementMessage(message: GmailMessageBody) {
+function isStatementMessage(message: Pick<GmailMessageBody, "subject">) {
   return STATEMENT_SUBJECT_RE.test(message.subject ?? "");
 }
 
@@ -498,7 +497,7 @@ export async function syncMbankGmail(
 export async function retryParseImportBatch(
   db: PrismaClient,
   batchId: string,
-  options: { adapter?: GmailReadAdapter; traceId?: string } = {}
+  options: { adapter?: Pick<GmailAdapter, "readGmailMessage" | "readGmailPdfAttachments">; traceId?: string; statementPassword?: string; categorize?: CategorizeTransactions } = {}
 ): Promise<MbankRetryParseResult> {
   const batch = await db.importBatch.findUnique({ where: { id: batchId } });
 
@@ -510,8 +509,10 @@ export async function retryParseImportBatch(
     throw new Error(`Import batch cannot be retried from status ${batch.status}.`);
   }
 
-  const adapter = options.adapter ?? { readGmailMessage };
+  const adapter = options.adapter ?? { readGmailMessage, readGmailPdfAttachments };
   const traceId = options.traceId ?? `gmail-retry-${batch.id}-${Date.now()}`;
+  const statementPassword = options.statementPassword ?? statementPasswordFromEnv();
+  const categorize = options.categorize ?? ((transactions) => categorizeTransactionsWithLlm(transactions));
   const summary: GmailMessageSummary = {
     id: batch.gmailMessageId,
     threadId: batch.gmailThreadId,
@@ -525,6 +526,68 @@ export async function retryParseImportBatch(
     const fullMessage = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.read", input: { id: summary.id } }, () =>
       adapter.readGmailMessage(summary)
     );
+
+    if (batch.provider === "MBANK_STATEMENT" || isStatementMessage(fullMessage)) {
+      if (!adapter.readGmailPdfAttachments) {
+        throw new MbankStatementParseError("This Gmail adapter cannot read PDF attachments, so mBank statements cannot be imported.");
+      }
+
+      const attachments = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.statement-pdf", input: { id: summary.id } }, () =>
+        adapter.readGmailPdfAttachments!(fullMessage)
+      );
+      const pdf = attachments.find((attachment) => (attachment.filename ?? "").toLowerCase().endsWith(".pdf")) ?? attachments[0];
+
+      if (!pdf) {
+        throw new MbankStatementParseError("mBank statement email has no PDF attachment to parse.");
+      }
+
+      const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.statement-parser", input: { id: summary.id } }, () =>
+        parseMbankStatementPdf(pdf.data, statementPassword)
+      );
+      const categorized = await traceStep(
+        db,
+        { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.categorizer", input: { id: summary.id, count: parsed.transactions.length } },
+        () => applyCategories(parsed, categorize)
+      );
+      const parsedTransactions = categorized.transactions.map(toStoredTransaction);
+
+      const duplicate = await db.importBatch.findFirst({
+        where: { provider: "MBANK_STATEMENT", gmailMessageId: fullMessage.id, operationDate: categorized.periodEnd, NOT: { id: batch.id } }
+      });
+
+      const updated = await db.importBatch.update({
+        where: { id: batch.id },
+        data: {
+          provider: "MBANK_STATEMENT",
+          gmailThreadId: fullMessage.threadId ?? null,
+          subject: fullMessage.subject ?? batch.subject,
+          sender: fullMessage.sender ?? batch.sender,
+          operationDate: categorized.periodEnd,
+          receivedAt: fullMessage.receivedAt ?? batch.receivedAt,
+          periodStart: categorized.periodStart,
+          periodEnd: categorized.periodEnd,
+          status: duplicate ? "DUPLICATE" : "PENDING_REVIEW",
+          transactionCount: categorized.transactions.length,
+          parsedTransactions,
+          errorMessage: duplicate ? `Duplicate of import batch ${duplicate.id}.` : null
+        }
+      });
+
+      return duplicate
+        ? {
+            status: "duplicate",
+            batch: updated,
+            transactionCount: categorized.transactions.length,
+            message: `Parsed successfully, but batch ${duplicate.id} already covers this statement period.`
+          }
+        : {
+            status: "pending_review",
+            batch: updated,
+            transactionCount: categorized.transactions.length,
+            message: `Retry parsed ${categorized.transactions.length} transaction(s). Review and confirm to import.`
+          };
+    }
+
     const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.parser", input: { id: summary.id } }, () =>
       parseMbankEmail(fullMessage.bodyText)
     );
