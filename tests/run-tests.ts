@@ -1145,6 +1145,12 @@ Numer referencyjny maila: X.
       assert.equal(state.transactions.length, 1);
       assert.equal(state.transactions[0]?.category, "people_transfers");
 
+      await updateBankTransactionCategory(db, String(state.transactions[0]?.id), "food");
+      const acceptedAgain = await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 0, "ACCEPTED");
+      assert.equal(acceptedAgain.status, "PENDING_REVIEW");
+      assert.equal(state.transactions.length, 1);
+      assert.equal(state.transactions[0]?.category, "food");
+
       const rejectedPreview = await updateImportPreviewTransactionReview(db, String(state.batches[0]?.id), 1, "REJECTED");
       assert.equal((rejectedPreview.parsedTransactions as Array<{ reviewStatus?: string }>)[1]?.reviewStatus, "REJECTED");
       assert.equal(rejectedPreview.status, "IMPORTED");
@@ -1154,6 +1160,7 @@ Numer referencyjny maila: X.
       );
 
       assert.equal(state.transactions.length, 1);
+      assert.equal(state.transactions[0]?.category, "food");
       assert.equal(state.batches[0]?.status, "IMPORTED");
 
       const updatedTransaction = await updateBankTransactionCategory(db, String(state.transactions[0]?.id), "shopping");

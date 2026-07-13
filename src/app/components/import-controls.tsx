@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
@@ -20,16 +20,24 @@ function hasKnownCategory(category: string) {
 
 function CategorySelect({ category, label }: { category: string; label: string }) {
   const { pending } = useFormStatus();
+  const [value, setValue] = useState(category);
+
+  useEffect(() => {
+    setValue(category);
+  }, [category]);
 
   return (
     <select
       className="category-select"
       name="category"
-      defaultValue={category}
+      value={value}
       disabled={pending}
       aria-busy={pending}
       aria-label={label}
-      onChange={(event) => event.currentTarget.form?.requestSubmit()}
+      onChange={(event) => {
+        setValue(event.currentTarget.value);
+        event.currentTarget.form?.requestSubmit();
+      }}
     >
       {hasKnownCategory(category) ? null : <option value={category}>{category}</option>}
       {EXPENSE_CATEGORY_OPTIONS.map((option) => (

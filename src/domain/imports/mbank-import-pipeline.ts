@@ -728,28 +728,44 @@ export async function updateImportPreviewTransactionCategory(
     throw new Error("Invalid import preview transaction index.");
   }
 
-  const batch = await db.importBatch.findUnique({ where: { id: batchId } });
+  return db.$transaction(async (tx) => {
+    const existing = await tx.importBatch.findUnique({ where: { id: batchId } });
+    if (!existing) {
+      throw new Error("Import batch not found.");
+    }
 
-  if (!batch) {
-    throw new Error("Import batch not found.");
-  }
+    // Updating the row first serializes category changes with review decisions.
+    const batch = await tx.importBatch.update({ where: { id: batchId }, data: { updatedAt: new Date() } });
+    if (batch.status !== "PENDING_REVIEW") {
+      throw new Error(`Import batch category cannot be changed from status ${batch.status}.`);
+    }
 
-  if (batch.status !== "PENDING_REVIEW") {
-    throw new Error(`Import batch category cannot be changed from status ${batch.status}.`);
-  }
+    const parsed = storedTransactions(batch.parsedTransactions);
+    const transaction = parsed[transactionIndex];
+    if (!transaction) {
+      throw new Error("Import preview transaction not found.");
+    }
 
-  const parsed = storedTransactions(batch.parsedTransactions);
-  if (!parsed[transactionIndex]) {
-    throw new Error("Import preview transaction not found.");
-  }
+    const parsedTransactions = parsed.map((item, index) =>
+      index === transactionIndex ? { ...item, category: nextCategory } : item
+    );
+    const updatedBatch = await tx.importBatch.update({
+      where: { id: batch.id },
+      data: { parsedTransactions: parsedTransactions as Prisma.InputJsonValue }
+    });
 
-  const parsedTransactions = parsed.map((transaction, index) =>
-    index === transactionIndex ? { ...transaction, category: nextCategory } : transaction
-  );
+    if (transaction.reviewStatus === "ACCEPTED") {
+      const [acceptedRow] = transactionRows(batch, [{ ...transaction, category: nextCategory }]);
+      const linkedTransactions = await tx.bankTransaction.findMany({ where: { importBatchId: batch.id } });
 
-  return db.importBatch.update({
-    where: { id: batch.id },
-    data: { parsedTransactions: parsedTransactions as Prisma.InputJsonValue }
+      for (const linked of linkedTransactions) {
+        if (acceptedRow && transactionIdentity(linked) === transactionIdentity(acceptedRow)) {
+          await tx.bankTransaction.update({ where: { id: linked.id }, data: { category: nextCategory } });
+        }
+      }
+    }
+
+    return updatedBatch;
   });
 }
 
@@ -764,12 +780,13 @@ export async function updateImportPreviewTransactionReview(
   }
 
   return db.$transaction(async (tx) => {
-    const batch = await tx.importBatch.findUnique({ where: { id: batchId } });
-
-    if (!batch) {
+    const existing = await tx.importBatch.findUnique({ where: { id: batchId } });
+    if (!existing) {
       throw new Error("Import batch not found.");
     }
 
+    // This update takes a row lock so concurrent double submissions are processed in order.
+    const batch = await tx.importBatch.update({ where: { id: batchId }, data: { updatedAt: new Date() } });
     if (batch.status !== "PENDING_REVIEW") {
       throw new Error(`Import preview cannot be changed from status ${batch.status}.`);
     }
@@ -838,6 +855,28 @@ function transactionRows(batch: ImportBatch, parsed: StoredParsedTransaction[]) 
     }));
 }
 
+function transactionIdentity(transaction: {
+  operationDate: Date;
+  bookingDate: Date | null;
+  amount: number | Prisma.Decimal;
+  direction: string;
+  description: string;
+  merchant: string | null;
+  accountLabel?: string | null;
+  balanceAfter?: number | Prisma.Decimal | null;
+}) {
+  return JSON.stringify([
+    transaction.operationDate.toISOString(),
+    transaction.bookingDate?.toISOString() ?? null,
+    Number(transaction.amount).toFixed(2),
+    transaction.direction,
+    transaction.description,
+    transaction.merchant,
+    transaction.accountLabel ?? null,
+    transaction.balanceAfter == null ? null : Number(transaction.balanceAfter).toFixed(2)
+  ]);
+}
+
 async function materializeAcceptedTransactions(
   tx: Prisma.TransactionClient,
   batch: ImportBatch,
@@ -881,12 +920,29 @@ async function materializeAcceptedTransactions(
     });
   }
 
-  await tx.bankTransaction.deleteMany({ where: { importBatchId: batch.id } });
-  if (rows.length > 0) {
-    await tx.bankTransaction.createMany({ data: rows });
+  const existingRows = await tx.bankTransaction.findMany({ where: { importBatchId: batch.id } });
+  const availableByIdentity = new Map<string, number>();
+  for (const existing of existingRows) {
+    const identity = transactionIdentity(existing);
+    availableByIdentity.set(identity, (availableByIdentity.get(identity) ?? 0) + 1);
   }
 
-  return { created: rows.length, superseded: supersededCount };
+  const missingRows = rows.filter((row) => {
+    const identity = transactionIdentity(row);
+    const available = availableByIdentity.get(identity) ?? 0;
+    if (available === 0) {
+      return true;
+    }
+
+    availableByIdentity.set(identity, available - 1);
+    return false;
+  });
+
+  if (missingRows.length > 0) {
+    await tx.bankTransaction.createMany({ data: missingRows });
+  }
+
+  return { created: existingRows.length + missingRows.length, superseded: supersededCount };
 }
 
 export async function confirmImportBatch(db: PrismaClient, batchId: string) {
