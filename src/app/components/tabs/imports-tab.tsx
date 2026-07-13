@@ -1,19 +1,27 @@
 import type { Prisma } from "@prisma/client";
 import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import type { DashboardData } from "../../dashboard-data";
-import { DeleteAllResolvedImportsControl, ImportBatchActions, ImportPreviewCategoryControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
+import { DeleteAllResolvedImportsControl, ImportBatchActions, ImportPreviewCategoryControl, ImportPreviewReviewControl, MbankSyncModeControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
 import { SchedulerNowControl } from "../maintenance-controls";
 import { PanelHeading, StatusChip, importStatusTone } from "../ui";
 
-function parsedPreview(value: Prisma.JsonValue | null | undefined) {
+type PreviewTransaction = Record<string, unknown> & {
+  description: string;
+  amount: number;
+  included: boolean;
+};
+
+function parsedPreview(value: Prisma.JsonValue | null | undefined): PreviewTransaction[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return value
     .map((item) => item as Record<string, unknown>)
-    .filter((item) => typeof item.description === "string" && typeof item.amount === "number")
-    .slice(0, 8);
+    .filter((item): item is Record<string, unknown> & { description: string; amount: number } =>
+      typeof item.description === "string" && typeof item.amount === "number"
+    )
+    .map((item) => ({ ...item, included: item.included !== false }));
 }
 
 export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailState: string }) {
@@ -31,14 +39,19 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
           </div>
           <p>Manual Sync reads mBank daily notifications and monthly statement PDFs. A confirmed statement is authoritative for its month and replaces any daily entries in that period. OAuth and Gmail access stay user-run outside the app.</p>
         </div>
+        <p className="helper-copy">Import mode applies to both Manual Sync and the scheduler. It affects new syncs; existing import previews remain available for review or rejection.</p>
+        <MbankSyncModeControl syncMode={data.schedulerState.syncMode} />
         <div className="review-actions inline-action">
-          <SyncMbankControl />
+          <SyncMbankControl syncMode={data.schedulerState.syncMode} />
           {pendingCount > 0 ? <RejectAllPendingImportsControl /> : null}
           {hasResolvedImports ? <DeleteAllResolvedImportsControl /> : null}
         </div>
         <div className="import-list">
           {data.importBatches.map((batch) => {
             const isStatement = batch.provider === "MBANK_STATEMENT";
+            const preview = parsedPreview(batch.parsedTransactions);
+            const includedCount = preview.filter((item) => item.included).length;
+            const rejectedCount = preview.length - includedCount;
             const periodLabel =
               isStatement && batch.periodStart && batch.periodEnd
                 ? `${formatDate(batch.periodStart)} - ${formatDate(batch.periodEnd)}`
@@ -58,14 +71,21 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
               {batch.errorMessage ? <p className="error-copy">{batch.errorMessage}</p> : null}
               <ImportBatchActions batchId={batch.id} status={batch.status} />
               {batch.status === "PENDING_REVIEW" ? (
-                <div className="preview-list">
-                  {parsedPreview(batch.parsedTransactions).map((item, index) => (
-                    <div className="preview-row" key={`${batch.id}-${index}`}>
-                      <ImportPreviewCategoryControl batchId={batch.id} transactionIndex={index} category={String(item.category)} />
-                      <strong>{String(item.description)}</strong>
-                      <span>{formatMoney(Number(item.amount), String(item.currency ?? "PLN"))}</span>
-                    </div>
-                  ))}
+                <div className="preview-shell">
+                  <div className="preview-summary">
+                    <strong>{includedCount} accepted</strong>
+                    <span>{rejectedCount} rejected</span>
+                  </div>
+                  <div className="preview-list" tabIndex={0} aria-label={`Import transactions: ${includedCount} accepted, ${rejectedCount} rejected`}>
+                    {preview.map((item, index) => (
+                      <div className={`preview-row${item.included ? "" : " is-rejected"}`} key={`${batch.id}-${index}`}>
+                        <ImportPreviewCategoryControl batchId={batch.id} transactionIndex={index} category={String(item.category)} />
+                        <ImportPreviewReviewControl batchId={batch.id} transactionIndex={index} included={Boolean(item.included)} />
+                        <strong>{String(item.description)}</strong>
+                        <span>{formatMoney(Number(item.amount), String(item.currency ?? "PLN"))}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </article>

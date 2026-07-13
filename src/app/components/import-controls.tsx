@@ -5,7 +5,9 @@ import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { EXPENSE_CATEGORY_OPTIONS } from "@/domain/portfolio/categories";
-import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
+import { MBANK_SYNC_MODE_OPTIONS } from "@/domain/imports/mbank-sync-mode";
+import type { MbankSyncMode } from "@prisma/client";
+import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateImportPreviewInclusionAction, updateMbankSyncModeAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
 const initialState: ActionResult = { status: "idle", message: "" };
@@ -16,19 +18,19 @@ function hasKnownCategory(category: string) {
   return EXPENSE_CATEGORY_OPTIONS.some((option) => option.value === category);
 }
 
-function CategorySaveButton() {
+function CategorySelect({ category, label }: { category: string; label: string }) {
   const { pending } = useFormStatus();
 
   return (
-    <button className="category-save-button" type="submit" disabled={pending} aria-busy={pending} aria-label="Save category" title="Save category">
-      {pending ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
-    </button>
-  );
-}
-
-function CategorySelect({ category, label }: { category: string; label: string }) {
-  return (
-    <select className="category-select" name="category" defaultValue={category} aria-label={label}>
+    <select
+      className="category-select"
+      name="category"
+      defaultValue={category}
+      disabled={pending}
+      aria-busy={pending}
+      aria-label={label}
+      onChange={(event) => event.currentTarget.form?.requestSubmit()}
+    >
       {hasKnownCategory(category) ? null : <option value={category}>{category}</option>}
       {EXPENSE_CATEGORY_OPTIONS.map((option) => (
         <option key={option.value} value={option.value}>{option.label}</option>
@@ -60,7 +62,7 @@ function Button({ kind, children }: { kind: ImportActionKind; children: React.Re
   );
 }
 
-export function SyncMbankControl() {
+export function SyncMbankControl({ syncMode }: { syncMode: MbankSyncMode }) {
   const [state, action] = useActionState(syncMbankGmailAction, initialState);
   const router = useRouter();
 
@@ -73,7 +75,42 @@ export function SyncMbankControl() {
   return (
     <div className="action-stack inline-action">
       <form action={action}>
-        <Button kind="sync">Sync now</Button>
+        <Button kind="sync">{syncMode === "STATEMENT_ONLY" ? "Sync statements now" : syncMode === "DAILY_ONLY" ? "Sync notifications now" : "Sync now"}</Button>
+      </form>
+      <ActionStatus state={state} />
+    </div>
+  );
+}
+
+function SyncModeSaveButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <button className="category-save-button" type="submit" disabled={pending} aria-busy={pending} aria-label="Save import mode" title="Save import mode">
+      {pending ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
+    </button>
+  );
+}
+
+export function MbankSyncModeControl({ syncMode }: { syncMode: MbankSyncMode }) {
+  const [state, action] = useActionState(updateMbankSyncModeAction, initialState);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (state.status === "success") {
+      router.refresh();
+    }
+  }, [router, state.status, state.timestamp]);
+
+  return (
+    <div className="action-stack inline-action">
+      <form className="category-form sync-mode-form" action={action}>
+        <select className="category-select" name="syncMode" defaultValue={syncMode} aria-label="mBank import mode">
+          {MBANK_SYNC_MODE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <SyncModeSaveButton />
       </form>
       <ActionStatus state={state} />
     </div>
@@ -174,6 +211,50 @@ export function ImportBatchActions({ batchId, status }: { batchId: string; statu
 }
 
 
+function ReviewDecisionButton({ included, active, label }: { included: boolean; active: boolean; label: string }) {
+  const { pending } = useFormStatus();
+  const Icon = included ? Check : X;
+
+  return (
+    <button
+      className={`preview-review-button ${included ? "accept" : "reject"}${active ? " active" : ""}`}
+      type="submit"
+      name="included"
+      value={String(included)}
+      disabled={pending}
+      aria-busy={pending}
+      aria-pressed={active}
+      aria-label={label}
+      title={label}
+    >
+      <Icon size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
+export function ImportPreviewReviewControl({ batchId, transactionIndex, included }: { batchId: string; transactionIndex: number; included: boolean }) {
+  const [state, action] = useActionState(updateImportPreviewInclusionAction, initialState);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (state.status === "success") {
+      router.refresh();
+    }
+  }, [router, state.status, state.timestamp]);
+
+  return (
+    <div className="preview-review-control">
+      <form action={action}>
+        <input type="hidden" name="batchId" value={batchId} />
+        <input type="hidden" name="transactionIndex" value={transactionIndex} />
+        <ReviewDecisionButton included active={included} label="Accept transaction" />
+        <ReviewDecisionButton included={false} active={!included} label="Reject transaction" />
+      </form>
+      {state.status === "error" ? <ActionStatus state={state} /> : null}
+    </div>
+  );
+}
+
 export function ImportPreviewCategoryControl({ batchId, transactionIndex, category }: { batchId: string; transactionIndex: number; category: string }) {
   const [state, action] = useActionState(updateImportPreviewCategoryAction, initialState);
   const router = useRouter();
@@ -189,8 +270,7 @@ export function ImportPreviewCategoryControl({ batchId, transactionIndex, catego
       <input type="hidden" name="batchId" value={batchId} />
       <input type="hidden" name="transactionIndex" value={transactionIndex} />
       <CategorySelect category={category} label="Import preview category" />
-      <CategorySaveButton />
-      {state.status !== "idle" ? <ActionStatus state={state} /> : null}
+      {state.status === "error" ? <ActionStatus state={state} /> : null}
     </form>
   );
 }
@@ -209,8 +289,7 @@ export function TransactionCategoryControl({ transactionId, category }: { transa
     <form className="category-form" action={action}>
       <input type="hidden" name="transactionId" value={transactionId} />
       <CategorySelect category={category} label="Transaction category" />
-      <CategorySaveButton />
-      {state.status !== "idle" ? <ActionStatus state={state} /> : null}
+      {state.status === "error" ? <ActionStatus state={state} /> : null}
     </form>
   );
 }

@@ -5,9 +5,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runPortfolioAnalysis } from "@/domain/workflows/run-analysis";
 import { LOCAL_RESOURCE_ID, defaultStrategy } from "@/domain/portfolio/strategy";
-import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "@/domain/imports/mbank-import-pipeline";
+import { mbankSyncModeLabel } from "@/domain/imports/mbank-sync-mode";
+import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionInclusion } from "@/domain/imports/mbank-import-pipeline";
 import { writeImportObservation } from "@/domain/memory/observational-memory";
-import { runDailySchedulerTick } from "@/domain/scheduler/daily-scheduler";
+import { ensureSchedulerState, runDailySchedulerTick } from "@/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "@/domain/retention/cleanup";
 import { sendGlobalChatMessage } from "@/domain/chat/global-chat";
 import { resolveAllowedLocalLlmModel } from "@/lib/llm/model-presets";
@@ -217,7 +218,8 @@ export async function syncMbankGmailAction(_previousState: ActionResult): Promis
   void _previousState;
 
   try {
-    const sync = await syncMbankGmail(prisma);
+    const schedulerState = await ensureSchedulerState(prisma);
+    const sync = await syncMbankGmail(prisma, { syncMode: schedulerState.syncMode });
     await writeImportObservation(prisma, {
       resourceId: LOCAL_RESOURCE_ID,
       topic: "gmail-sync",
@@ -228,6 +230,27 @@ export async function syncMbankGmailAction(_previousState: ActionResult): Promis
     return result("success", "mBank Gmail sync finished.", sync.message);
   } catch (error) {
     return result("error", "mBank Gmail sync failed.", error instanceof Error ? error.message : "Unknown import error.");
+  }
+}
+
+const mbankSyncModeSchema = z.enum(["DAILY_ONLY", "STATEMENT_ONLY", "BOTH"]);
+
+export async function updateMbankSyncModeAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  void _previousState;
+
+  const parsedMode = mbankSyncModeSchema.safeParse(formString(formData, "syncMode"));
+
+  if (!parsedMode.success) {
+    return result("error", "Invalid sync mode.");
+  }
+
+  try {
+    const schedulerState = await ensureSchedulerState(prisma);
+    await prisma.schedulerState.update({ where: { id: schedulerState.id }, data: { syncMode: parsedMode.data } });
+    revalidatePath("/");
+    return result("success", "Import mode updated.", `${mbankSyncModeLabel(parsedMode.data)} will be used by Manual Sync and the scheduler.`);
+  } catch (error) {
+    return result("error", "Could not update sync mode.", error instanceof Error ? error.message : "Unknown error.");
   }
 }
 
@@ -380,6 +403,26 @@ export async function updateImportPreviewCategoryAction(_previousState: ActionRe
     return result("success", "Category saved.", "The import preview was updated.");
   } catch (error) {
     return result("error", "Category was not saved.", error instanceof Error ? error.message : "Unknown category update error.");
+  }
+}
+
+export async function updateImportPreviewInclusionAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  void _previousState;
+
+  try {
+    const batchId = formString(formData, "batchId");
+    const transactionIndex = Number(formString(formData, "transactionIndex"));
+    const included = formString(formData, "included");
+
+    if (!batchId || !Number.isInteger(transactionIndex) || (included !== "true" && included !== "false")) {
+      return result("error", "Transaction review was not saved.", "Missing import batch, transaction index or review decision.");
+    }
+
+    await updateImportPreviewTransactionInclusion(prisma, batchId, transactionIndex, included === "true");
+    revalidatePath("/");
+    return result("success", included === "true" ? "Transaction accepted." : "Transaction rejected.");
+  } catch (error) {
+    return result("error", "Transaction review was not saved.", error instanceof Error ? error.message : "Unknown transaction review error.");
   }
 }
 

@@ -52,7 +52,7 @@ export async function runDailySchedulerTick(db: PrismaClient, options: { force?:
   await db.schedulerState.update({ where: { id: state.id }, data: { running: true, lastError: null } });
 
   try {
-    const result = await syncMbankGmail(db, { traceId: `scheduler-${now.toISOString()}` });
+    const result = await syncMbankGmail(db, { traceId: `scheduler-${now.toISOString()}`, syncMode: state.syncMode });
     const nextRunAt = calculateNextDailyRun(now, state.timeOfDay);
 
     await db.schedulerState.update({

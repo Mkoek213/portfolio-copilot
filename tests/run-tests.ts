@@ -22,7 +22,7 @@ import {
   validateOfficialGmailMcpEndpoint,
   type GmailMessageSummary
 } from "../src/domain/imports/gmail-mcp-adapter";
-import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory } from "../src/domain/imports/mbank-import-pipeline";
+import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionInclusion } from "../src/domain/imports/mbank-import-pipeline";
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
@@ -1126,8 +1126,23 @@ Numer referencyjny maila: X.
       assert.equal(state.batches[0]?.status, "PENDING_REVIEW");
 
       const updatedPreview = await updateImportPreviewTransactionCategory(db, String(state.batches[0]?.id), 0, "people_transfers");
-      const updatedPreviewTransactions = updatedPreview.parsedTransactions as Array<{ category: string }>;
+      const updatedPreviewTransactions = updatedPreview.parsedTransactions as Array<{ category: string; included?: boolean }>;
       assert.equal(updatedPreviewTransactions[0]?.category, "people_transfers");
+
+      const acceptedPreview = updatedPreviewTransactions[0]!;
+      await db.importBatch.update({
+        where: { id: String(state.batches[0]?.id) },
+        data: {
+          transactionCount: 2,
+          parsedTransactions: [acceptedPreview, { ...acceptedPreview, description: "Rejected preview transaction" }]
+        }
+      });
+
+      const rejectedPreview = await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, false);
+      assert.equal((rejectedPreview.parsedTransactions as Array<{ included?: boolean }>)[1]?.included, false);
+      const acceptedAgain = await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, true);
+      assert.equal((acceptedAgain.parsedTransactions as Array<{ included?: boolean }>)[1]?.included, true);
+      await updateImportPreviewTransactionInclusion(db, String(state.batches[0]?.id), 1, false);
 
       const confirmed = await confirmImportBatch(db, String(state.batches[0]?.id));
       assert.equal(confirmed.created, 1);
@@ -1447,6 +1462,107 @@ Numer referencyjny maila: X.
       assert.equal(retry.transactionCount, 1);
       assert.equal(state.batches[0]?.status, "PENDING_REVIEW");
       assert.equal(state.transactions.length, 0);
+    }
+  },
+  {
+    name: "syncMbankGmail respects syncMode by filtering out the other message type before processing",
+    async run() {
+      const dailySummary: GmailMessageSummary = {
+        id: "msg-daily-1",
+        threadId: "thread-daily",
+        subject: null,
+        sender: "mBank",
+        receivedAt: new Date("2026-07-02T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const statementSummary: GmailMessageSummary = {
+        id: "msg-statement-1",
+        threadId: "thread-statement",
+        subject: null,
+        sender: "mBank",
+        receivedAt: new Date("2026-07-05T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const adapter = {
+        searchMbankMessages: async () => [dailySummary, statementSummary],
+        readGmailMessage: async (message: GmailMessageSummary) =>
+          message.id === dailySummary.id
+            ? { ...dailySummary, subject: "mBank - powiadomienie e-mail", bodyText: mbankFixture() }
+            : { ...statementSummary, subject: "mBank - elektroniczne zestawienie operacji za czerwiec 2026", bodyText: "irrelevant" },
+        readGmailPdfAttachments: async () => []
+      };
+
+      const { db: dailyOnlyDb, state: dailyOnlyState } = createImportHarness();
+      await syncMbankGmail(dailyOnlyDb, { adapter, traceId: "daily-only", categorize: deterministicCategorize, syncMode: "DAILY_ONLY" });
+      assert.equal(dailyOnlyState.batches.length, 1);
+      assert.equal(dailyOnlyState.batches[0]?.gmailMessageId, dailySummary.id);
+
+      const { db: statementOnlyDb, state: statementOnlyState } = createImportHarness();
+      await syncMbankGmail(statementOnlyDb, { adapter, traceId: "statement-only", categorize: deterministicCategorize, syncMode: "STATEMENT_ONLY" });
+      assert.equal(statementOnlyState.batches.length, 1);
+      assert.equal(statementOnlyState.batches[0]?.gmailMessageId, statementSummary.id);
+      assert.equal(statementOnlyState.batches[0]?.provider, "MBANK_STATEMENT");
+
+      const { db: bothDb, state: bothState } = createImportHarness();
+      await syncMbankGmail(bothDb, { adapter, traceId: "both", categorize: deterministicCategorize, syncMode: "BOTH" });
+      assert.equal(bothState.batches.length, 2);
+    }
+  },
+  {
+    name: "createFailedBatch tags a failed statement email with the MBANK_STATEMENT provider",
+    async run() {
+      const { db, state } = createImportHarness();
+      const summary: GmailMessageSummary = {
+        id: "msg-statement-broken",
+        threadId: "thread-statement",
+        subject: "mBank - elektroniczne zestawienie operacji za czerwiec 2026",
+        sender: "mBank",
+        receivedAt: new Date("2026-07-01T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const brokenAdapter = {
+        searchMbankMessages: async () => [summary],
+        readGmailMessage: async () => ({ ...summary, bodyText: "irrelevant" }),
+        readGmailPdfAttachments: async () => []
+      };
+
+      const result = await syncMbankGmail(db, { adapter: brokenAdapter, traceId: "statement-fail-sync", categorize: deterministicCategorize });
+      assert.equal(result.failed, 1);
+      assert.equal(state.batches.length, 1);
+      assert.equal(state.batches[0]?.status, "FAILED");
+      assert.equal(state.batches[0]?.provider, "MBANK_STATEMENT");
+    }
+  },
+  {
+    name: "retryParseImportBatch retries a failed statement batch through the PDF path, not the email parser",
+    async run() {
+      const { db, state } = createImportHarness();
+
+      const failed = await db.importBatch.create({
+        data: {
+          provider: "MBANK_STATEMENT",
+          gmailMessageId: "msg-statement-retry",
+          subject: "mBank - elektroniczne zestawienie operacji za czerwiec 2026",
+          status: "FAILED",
+          errorMessage: "Could not open the mBank statement PDF: Setting up fake worker failed."
+        }
+      });
+      const message = { id: failed.gmailMessageId, threadId: null, subject: failed.subject, sender: null, receivedAt: null, bodyText: "irrelevant" };
+
+      const noAdapterRetry = await retryParseImportBatch(db, failed.id, {
+        adapter: { readGmailMessage: async () => message },
+        traceId: "statement-retry-no-adapter"
+      });
+      assert.equal(noAdapterRetry.status, "failed");
+      assert.match(noAdapterRetry.message, /cannot read PDF attachments/);
+      assert.equal(state.batches[0]?.status, "FAILED");
+
+      const noPdfRetry = await retryParseImportBatch(db, failed.id, {
+        adapter: { readGmailMessage: async () => message, readGmailPdfAttachments: async () => [] },
+        traceId: "statement-retry-no-pdf"
+      });
+      assert.equal(noPdfRetry.status, "failed");
+      assert.match(noPdfRetry.message, /no PDF attachment/);
     }
   },
   {
