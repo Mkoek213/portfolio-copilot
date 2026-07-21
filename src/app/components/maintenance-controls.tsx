@@ -1,12 +1,13 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Clock3, Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cleanupRetentionAction, runSchedulerNowAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
+import { ConfirmSubmitButton } from "./confirm-submit-button";
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
@@ -45,6 +46,7 @@ export function SchedulerNowControl() {
 export function RetentionCleanupControl() {
   const [state, action] = useActionState(cleanupRetentionAction, initialState);
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (state.status === "success") {
@@ -54,8 +56,15 @@ export function RetentionCleanupControl() {
 
   return (
     <div className="my-1 grid justify-items-start gap-2.5">
-      <form action={action}>
-        <MaintenanceButton kind="cleanup">Clean retained data</MaintenanceButton>
+      <form action={action} ref={formRef}>
+        <ConfirmSubmitButton
+          icon={Trash2}
+          label="Clean retained data"
+          title="Clean retained data?"
+          description="This clears disposable retained records (old reports, runs, events and trace spans past the retention window). Transactions are never deleted."
+          confirmLabel="Clean up"
+          onConfirm={() => formRef.current?.requestSubmit()}
+        />
       </form>
       <ActionStatus state={state} />
     </div>

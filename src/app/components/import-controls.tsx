@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
@@ -10,6 +10,7 @@ import type { MbankSyncMode } from "@prisma/client";
 import { Button as UiButton } from "@/components/ui/button";
 import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateImportPreviewReviewAction, updateMbankSyncModeAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
+import { ConfirmSubmitButton } from "./confirm-submit-button";
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
@@ -136,6 +137,7 @@ export function MbankSyncModeControl({ syncMode }: { syncMode: MbankSyncMode }) 
 export function RejectAllPendingImportsControl() {
   const [state, action] = useActionState(rejectAllPendingImportsAction, initialState);
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (state.status === "success") {
@@ -145,8 +147,15 @@ export function RejectAllPendingImportsControl() {
 
   return (
     <div className={stackClass}>
-      <form action={action}>
-        <Button kind="reject-all">Reject all pending</Button>
+      <form action={action} ref={formRef}>
+        <ConfirmSubmitButton
+          icon={X}
+          label="Reject all pending"
+          title="Reject all pending imports?"
+          description="This rejects every pending-review import batch. Nothing is imported; you can re-sync later."
+          confirmLabel="Reject all"
+          onConfirm={() => formRef.current?.requestSubmit()}
+        />
       </form>
       <ActionStatus state={state} />
     </div>
@@ -156,6 +165,7 @@ export function RejectAllPendingImportsControl() {
 export function DeleteAllResolvedImportsControl() {
   const [state, action] = useActionState(deleteAllResolvedImportsAction, initialState);
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (state.status === "success") {
@@ -165,8 +175,15 @@ export function DeleteAllResolvedImportsControl() {
 
   return (
     <div className={stackClass}>
-      <form action={action}>
-        <Button kind="delete-all">Delete failed/skipped</Button>
+      <form action={action} ref={formRef}>
+        <ConfirmSubmitButton
+          icon={Trash2}
+          label="Delete failed/skipped"
+          title="Delete failed and skipped imports?"
+          description="This permanently removes every failed or skipped import batch. This can't be undone."
+          confirmLabel="Delete"
+          onConfirm={() => formRef.current?.requestSubmit()}
+        />
       </form>
       <ActionStatus state={state} />
     </div>
@@ -189,6 +206,7 @@ export function ImportBatchActions({
   const [retryState, retryAction] = useActionState(retryImportParseAction, initialState);
   const [deleteState, deleteAction] = useActionState(deleteImportAction, initialState);
   const router = useRouter();
+  const deleteFormRef = useRef<HTMLFormElement>(null);
   const canConfirm = status === "PENDING_REVIEW";
   const canRetry = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
   const canReject = status === "PENDING_REVIEW" || status === "FAILED" || status === "SKIPPED";
@@ -228,9 +246,16 @@ export function ImportBatchActions({
         </form>
       ) : null}
       {canDelete ? (
-        <form action={deleteAction}>
+        <form action={deleteAction} ref={deleteFormRef}>
           <input type="hidden" name="batchId" value={batchId} />
-          <Button kind="delete">Delete</Button>
+          <ConfirmSubmitButton
+            icon={Trash2}
+            label="Delete"
+            title="Delete this import batch?"
+            description="This permanently removes the import batch and its parsed preview. This can't be undone."
+            confirmLabel="Delete"
+            onConfirm={() => deleteFormRef.current?.requestSubmit()}
+          />
         </form>
       ) : null}
       <ActionStatus state={visibleState} />
