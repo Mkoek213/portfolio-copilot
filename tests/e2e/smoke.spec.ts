@@ -26,7 +26,7 @@ for (const [tab, heading] of TABS) {
 
     await page.goto(`/?tab=${tab}`, { waitUntil: "networkidle" });
 
-    await expect(page.locator(".topbar-title h1")).toHaveText(heading);
+    await expect(page.locator("header h1")).toHaveText(heading);
     expect(errors, `console errors on ?tab=${tab}:\n${errors.join("\n")}`).toHaveLength(0);
   });
 }
