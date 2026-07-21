@@ -28,7 +28,7 @@ function CategorySelect({ category, label }: { category: string; label: string }
 
   return (
     <select
-      className="category-select"
+      className="h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-[0.8rem] text-foreground outline-none transition-colors hover:border-ring/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-65"
       name="category"
       value={value}
       disabled={pending}
@@ -305,7 +305,7 @@ export function TransactionCategoryControl({ transactionId, category }: { transa
   }, [router, state.status, state.timestamp]);
 
   return (
-    <form className="category-form" action={action}>
+    <form className="grid min-w-0 items-center gap-1.5" action={action}>
       <input type="hidden" name="transactionId" value={transactionId} />
       <CategorySelect category={category} label="Transaction category" />
       {state.status === "error" ? <ActionStatus state={state} /> : null}
