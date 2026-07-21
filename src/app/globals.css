@@ -82,9 +82,89 @@ a {
   color: inherit;
 }
 
+/* ---------- Ambient background ---------- */
+
+.ambient-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-bg span {
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0.22;
+  filter: blur(90px);
+  will-change: transform;
+}
+
+.ambient-bg span:nth-child(1) {
+  top: -18%;
+  left: -12%;
+  width: 46vw;
+  height: 46vw;
+  background: var(--accent);
+  animation: drift-a 64s ease-in-out infinite;
+}
+
+.ambient-bg span:nth-child(2) {
+  top: 8%;
+  right: -14%;
+  width: 38vw;
+  height: 38vw;
+  background: #eda100;
+  animation: drift-b 78s ease-in-out infinite;
+}
+
+.ambient-bg span:nth-child(3) {
+  bottom: -20%;
+  left: 22%;
+  width: 42vw;
+  height: 42vw;
+  background: #4a3aa7;
+  animation: drift-c 90s ease-in-out infinite;
+}
+
+@keyframes drift-a {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  50% {
+    transform: translate(6vw, 5vh) scale(1.08);
+  }
+}
+
+@keyframes drift-b {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  50% {
+    transform: translate(-5vw, 6vh) scale(0.94);
+  }
+}
+
+@keyframes drift-c {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  50% {
+    transform: translate(4vw, -5vh) scale(1.06);
+  }
+}
+
 /* ---------- App shell ---------- */
 
 .app {
+  position: relative;
+  z-index: 1;
   display: flex;
   min-height: 100vh;
 }
@@ -149,15 +229,22 @@ a {
   font-size: 0.875rem;
   font-weight: 500;
   text-decoration: none;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 
 .side-nav a svg {
   color: var(--ink-3);
+  transition: color 0.16s ease, transform 0.16s ease;
 }
 
 .side-nav a:hover {
   background: var(--surface-2);
   color: var(--ink);
+  transform: translateX(2px);
+}
+
+.side-nav a:hover svg {
+  transform: scale(1.08);
 }
 
 .side-nav a.active {
@@ -203,6 +290,7 @@ a {
 }
 
 .service-dot {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 999px;
@@ -213,8 +301,28 @@ a {
   background: #0ca30c;
 }
 
+.service-dot.ok::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: dot-pulse 2.2s ease-out infinite;
+}
+
 .service-dot.warn {
   background: #d3d3ca;
+}
+
+@keyframes dot-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
 }
 
 .main {
@@ -272,6 +380,13 @@ a {
   cursor: pointer;
   text-decoration: none;
   white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.primary-button:active,
+.secondary-button:active,
+.ghost-button:active {
+  transform: scale(0.97);
 }
 
 .primary-button {
@@ -282,6 +397,8 @@ a {
 
 .primary-button:hover {
   background: var(--accent-strong);
+  box-shadow: 0 4px 14px rgba(11, 95, 88, 0.28);
+  transform: translateY(-1px);
 }
 
 .secondary-button {
@@ -293,6 +410,8 @@ a {
 .secondary-button:hover {
   background: var(--surface-2);
   color: var(--ink);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
 }
 
 .ghost-button {
@@ -304,6 +423,7 @@ a {
 .ghost-button:hover {
   background: var(--crit-soft);
   border-color: var(--crit-soft);
+  transform: translateY(-1px);
 }
 
 .primary-button:disabled,
@@ -434,6 +554,22 @@ a {
   gap: 18px;
 }
 
+.content > * {
+  animation: content-in 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes content-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -461,6 +597,30 @@ a {
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  animation: content-in 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tile:hover {
+  transform: translateY(-3px);
+  border-color: var(--line-strong);
+  box-shadow: 0 10px 26px rgba(22, 24, 21, 0.1);
+}
+
+.tile-grid .tile:nth-child(1) {
+  animation-delay: 0.02s;
+}
+
+.tile-grid .tile:nth-child(2) {
+  animation-delay: 0.07s;
+}
+
+.tile-grid .tile:nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.tile-grid .tile:nth-child(4) {
+  animation-delay: 0.17s;
 }
 
 .tile-label {
@@ -627,6 +787,19 @@ a {
 .colbar {
   width: 18px;
   border-radius: 4px 4px 0 0;
+  transform-origin: bottom;
+  transition: filter 0.15s ease;
+  animation: grow-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes grow-up {
+  from {
+    transform: scaleY(0);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
 }
 
 .colgroup:hover .colbar,
@@ -749,6 +922,18 @@ a {
   height: 100%;
   border-radius: 0 4px 4px 0;
   min-width: 2px;
+  transform-origin: left;
+  animation: grow-right 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes grow-right {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
 }
 
 .catbar-value {
@@ -782,6 +967,8 @@ a {
 .alloc-segment {
   display: block;
   min-width: 3px;
+  transform-origin: left;
+  animation: grow-right 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .alloc-legend {
@@ -864,6 +1051,7 @@ a {
   padding: 10px;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
+  transition: background-color 0.12s ease;
 }
 
 .data-table tbody tr:last-child td {
@@ -1277,6 +1465,26 @@ a {
   border-radius: var(--radius-sm);
   background: var(--surface);
   font-size: 0.85rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.filter-grid input:hover,
+.filter-grid select:hover,
+.strategy-form input:hover,
+.strategy-form select:hover,
+.strategy-form textarea:hover,
+.category-select:hover {
+  border-color: var(--ink-3);
+}
+
+.filter-grid input:focus-visible,
+.filter-grid select:focus-visible,
+.strategy-form input:focus-visible,
+.strategy-form select:focus-visible,
+.strategy-form textarea:focus-visible,
+.category-select:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .strategy-form textarea {
@@ -1867,6 +2075,8 @@ a {
 }
 
 .setup-shell {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: grid;
   place-items: center;
