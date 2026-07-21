@@ -92,7 +92,7 @@ function ServiceDot({ ok, label, detail }: { ok: boolean; label: string; detail:
 }
 
 const navBase =
-  "flex min-h-9 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium no-underline transition-[color,background-color,transform] duration-150 ease-out [&_svg]:transition-transform [&_svg]:duration-150 max-[920px]:whitespace-nowrap";
+  "flex min-h-9 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium no-underline outline-none transition-[color,background-color,transform] duration-150 ease-out focus-visible:ring-2 focus-visible:ring-ring [&_svg]:transition-transform [&_svg]:duration-150 max-[920px]:whitespace-nowrap";
 const navInactive = "text-muted-foreground hover:translate-x-0.5 hover:bg-secondary hover:text-foreground [&:hover_svg]:scale-110";
 const navActive = "bg-brand-soft font-semibold text-brand-strong [&_svg]:text-brand";
 

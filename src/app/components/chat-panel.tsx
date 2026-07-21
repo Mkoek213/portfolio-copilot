@@ -18,7 +18,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       type="button"
-      className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
+      className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/msg:opacity-100"
       aria-label={copied ? "Copied" : "Copy message"}
       title={copied ? "Copied" : "Copy message"}
       onClick={async () => {
@@ -183,7 +183,7 @@ export function ChatPanel({
               <button
                 key={prompt}
                 type="button"
-                className="rounded-full border border-input bg-background px-3 py-1.5 text-[0.8rem] text-muted-foreground transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand-strong"
+                className="rounded-full border border-input bg-background px-3 py-1.5 text-[0.8rem] text-muted-foreground outline-none transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand-strong focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                 onClick={() => setDraft(prompt)}
               >
                 {prompt}

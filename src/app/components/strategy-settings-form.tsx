@@ -66,7 +66,18 @@ export function StrategySettingsForm({ strategy }: { strategy: StrategyMemory })
       sub="Local source of truth for reports and strategy suggestions"
       action={<SlidersHorizontal size={18} aria-hidden="true" />}
     >
-      <form action={formAction} className="grid gap-4">
+      <form
+        action={formAction}
+        className="grid gap-4"
+        onInvalidCapture={(event) => {
+          // A guardrail input can be invalid while its <details> is collapsed;
+          // open it so the browser can focus the first invalid field.
+          const details = (event.target as HTMLElement).closest("details");
+          if (details && !details.open) {
+            details.open = true;
+          }
+        }}
+      >
         <div className={row3}>
           <label className={fieldLabel}>
             <span className={fieldSpan}>Profile name</span>

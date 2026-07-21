@@ -59,7 +59,7 @@ export function OverviewTab({ data }: { data: DashboardData }) {
                 <Badge variant="muted">{data.latestReport.reportType.toLowerCase()}</Badge>
               </div>
               <p className="text-[0.88rem] leading-[1.55] text-foreground/80">{data.latestReport.summary}</p>
-              <Link className="inline-flex items-center gap-1.5 text-[0.85rem] font-semibold text-brand-strong hover:underline" href="/?tab=reports">
+              <Link className="inline-flex w-fit items-center gap-1.5 rounded-sm text-[0.85rem] font-semibold text-brand-strong outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring" href="/?tab=reports">
                 Read the full report <ArrowRight size={14} aria-hidden="true" />
               </Link>
             </div>
