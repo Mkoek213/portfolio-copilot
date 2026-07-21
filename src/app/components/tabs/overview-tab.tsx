@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { formatDateTime, formatMoney, formatPercent } from "@/lib/format";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { DashboardData } from "../../dashboard-data";
 import { AllocationStack, CashflowChart, CategoryBars, Sparkline } from "../charts";
 import { assetClassSeries } from "../chart-series";
-import { PanelHeading, StatTile, StatusChip, riskTone } from "../ui";
+import { SectionCard, StatTile, StatusChip, riskTone } from "../ui";
 
 type RiskFlag = { level: string; topic: string; message: string };
 
@@ -19,7 +21,7 @@ export function OverviewTab({ data }: { data: DashboardData }) {
 
   return (
     <>
-      <section className="tile-grid" aria-label="Key financial figures">
+      <section className="grid grid-cols-4 gap-3.5 max-[1160px]:grid-cols-2 max-[640px]:grid-cols-1" aria-label="Key financial figures">
         <StatTile label="Total portfolio" value={formatMoney(data.totalValue)} hint={data.latestSnapshot ? `as of ${formatDateTime(data.latestSnapshot.createdAt)}` : "live from positions"}>
           <Sparkline points={sparkPoints} ariaLabel="Portfolio value trend across analysis runs" />
         </StatTile>
@@ -42,111 +44,103 @@ export function OverviewTab({ data }: { data: DashboardData }) {
         />
       </section>
 
-      <section className="grid-2 grid-major" aria-label="Cashflow and latest report">
-        <div className="panel">
-          <PanelHeading title="Cashflow" sub="Inflow vs outflow · last 6 months" />
+      <section className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1" aria-label="Cashflow and latest report">
+        <SectionCard title="Cashflow" sub="Inflow vs outflow · last 6 months">
           <CashflowChart months={data.monthlyCashflow} />
-        </div>
+        </SectionCard>
 
-        <div className="panel">
-          <PanelHeading title="Latest AI report" sub={data.latestReport ? formatDateTime(data.latestReport.createdAt) : "not generated yet"} />
+        <SectionCard title="Latest AI report" sub={data.latestReport ? formatDateTime(data.latestReport.createdAt) : "not generated yet"}>
           {data.latestReport ? (
-            <div className="report-teaser">
-              <h3>{data.latestReport.title}</h3>
-              <div className="chip-row">
+            <div className="grid gap-2.5">
+              <h3 className="text-[0.95rem] font-[650] leading-[1.35]">{data.latestReport.title}</h3>
+              <div className="flex flex-wrap gap-1.5">
                 <StatusChip tone={data.latestReport.criticVerdict === "PASS" ? "good" : "warn"} label={`critic ${data.latestReport.criticVerdict.toLowerCase()}`} />
-                <span className="chip chip-plain">{data.latestReport.reporterSource}</span>
-                <span className="chip chip-plain">{data.latestReport.reportType.toLowerCase()}</span>
+                <Badge variant="muted">{data.latestReport.reporterSource}</Badge>
+                <Badge variant="muted">{data.latestReport.reportType.toLowerCase()}</Badge>
               </div>
-              <p>{data.latestReport.summary}</p>
-              <Link className="text-link" href="/?tab=reports">
+              <p className="text-[0.88rem] leading-[1.55] text-foreground/80">{data.latestReport.summary}</p>
+              <Link className="inline-flex items-center gap-1.5 text-[0.85rem] font-semibold text-brand-strong hover:underline" href="/?tab=reports">
                 Read the full report <ArrowRight size={14} aria-hidden="true" />
               </Link>
             </div>
           ) : (
-            <p className="empty-state">Run the analysis to generate the first local report.</p>
+            <p className="text-[0.86rem] text-muted-foreground">Run the analysis to generate the first local report.</p>
           )}
-        </div>
+        </SectionCard>
       </section>
 
-      <section className="grid-2" aria-label="Spending and allocation">
-        <div className="panel">
-          <PanelHeading title="Spending by category" sub={`${formatMoney(data.monthlyOutflow)} outflow this month`} />
+      <section className="grid grid-cols-2 gap-[18px] max-[1160px]:grid-cols-1" aria-label="Spending and allocation">
+        <SectionCard title="Spending by category" sub={`${formatMoney(data.monthlyOutflow)} outflow this month`}>
           <CategoryBars items={data.topCategories} />
-        </div>
+        </SectionCard>
 
-        <div className="panel">
-          <PanelHeading title="Portfolio allocation" sub={data.allocationIsLive ? "live from positions" : "from latest analysis run"} />
+        <SectionCard title="Portfolio allocation" sub={data.allocationIsLive ? "live from positions" : "from latest analysis run"}>
           <AllocationStack items={data.allocationByClass} targets={targets} totalValue={data.totalValue} />
-        </div>
+        </SectionCard>
       </section>
 
-      <section className="grid-2 grid-major" aria-label="Positions and risks">
-        <div className="panel">
-          <PanelHeading title="Positions" sub={`${data.positions.length} holdings · ${new Set(data.positions.map((position) => position.accountId)).size} read-only accounts`} />
+      <section className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1" aria-label="Positions and risks">
+        <SectionCard title="Positions" sub={`${data.positions.length} holdings · ${new Set(data.positions.map((position) => position.accountId)).size} read-only accounts`} contentClassName="px-0">
           {data.positions.length > 0 ? (
-            <div className="table-wrap">
-              <table className="data-table positions-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Asset</th>
-                    <th scope="col">Account</th>
-                    <th scope="col">Class</th>
-                    <th scope="col" className="num">Value</th>
-                    <th scope="col" className="num">Weight</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.positions.map((position) => {
-                    const weight = data.totalValue > 0 ? (Number(position.marketValueBase) / data.totalValue) * 100 : 0;
-                    const series = assetClassSeries(position.asset.assetClass);
+            <Table className="min-w-[560px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-4 text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Asset</TableHead>
+                  <TableHead className="text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Account</TableHead>
+                  <TableHead className="text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Class</TableHead>
+                  <TableHead className="text-right text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Value</TableHead>
+                  <TableHead className="pr-4 text-right text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Weight</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.positions.map((position) => {
+                  const weight = data.totalValue > 0 ? (Number(position.marketValueBase) / data.totalValue) * 100 : 0;
+                  const series = assetClassSeries(position.asset.assetClass);
 
-                    return (
-                      <tr key={position.id}>
-                        <td>
-                          <strong>{position.asset.symbol}</strong>
-                          <span className="cell-sub">{position.asset.name}</span>
-                        </td>
-                        <td className="cell-muted">{position.account.name}</td>
-                        <td>
-                          <span className="class-key">
-                            <i className="legend-swatch" style={{ background: series.color }} aria-hidden="true" />
-                            {series.label}
-                          </span>
-                        </td>
-                        <td className="num">{formatMoney(position.marketValueBase)}</td>
-                        <td className="num">
-                          {formatPercent(Math.round(weight * 10) / 10)}
-                          <span className="weight-meter" aria-hidden="true">
-                            <i style={{ width: `${Math.min(weight, 100)}%` }} />
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  return (
+                    <TableRow key={position.id}>
+                      <TableCell className="whitespace-normal py-2.5 pl-4 align-top">
+                        <strong className="font-semibold">{position.asset.symbol}</strong>
+                        <span className="mt-0.5 block text-[0.78rem] text-muted-foreground [overflow-wrap:anywhere]">{position.asset.name}</span>
+                      </TableCell>
+                      <TableCell className="py-2.5 align-top text-muted-foreground">{position.account.name}</TableCell>
+                      <TableCell className="py-2.5 align-top">
+                        <span className="inline-flex items-center gap-[7px] whitespace-nowrap text-[0.82rem] text-muted-foreground">
+                          <i className="inline-block size-2.5 shrink-0 rounded-[3px]" style={{ background: series.color }} aria-hidden="true" />
+                          {series.label}
+                        </span>
+                      </TableCell>
+                      <TableCell className="py-2.5 text-right align-top tabular-nums">{formatMoney(position.marketValueBase)}</TableCell>
+                      <TableCell className="py-2.5 pr-4 text-right align-top tabular-nums">
+                        {formatPercent(Math.round(weight * 10) / 10)}
+                        <span className="mt-[5px] ml-auto block h-1 w-[76px] overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                          <i className="block h-full rounded-full bg-[#2a78d6]" style={{ width: `${Math.min(weight, 100)}%` }} />
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           ) : (
-            <p className="empty-state">No positions yet. Seed the database to load sample accounts.</p>
+            <p className="text-[0.86rem] text-muted-foreground">No positions yet. Seed the database to load sample accounts.</p>
           )}
-        </div>
+        </SectionCard>
 
-        <div className="panel">
-          <PanelHeading title="Risk flags" sub={`${latestRisks.length} from latest report`} />
-          <div className="risk-list">
+        <SectionCard title="Risk flags" sub={`${latestRisks.length} from latest report`}>
+          <div className="grid">
             {latestRisks.slice(0, 6).map((risk, index) => (
-              <article className="risk-item" key={`${risk.topic}-${index}`}>
-                <div className="risk-item-head">
+              <article className="border-b border-border py-[11px] first:pt-0 last:border-0 last:pb-0" key={`${risk.topic}-${index}`}>
+                <div className="flex flex-wrap items-center gap-2">
                   <StatusChip tone={riskTone(risk.level)} label={risk.level} />
-                  <strong>{risk.topic}</strong>
+                  <strong className="text-[0.86rem] font-semibold">{risk.topic}</strong>
                 </div>
-                <p>{risk.message}</p>
+                <p className="mt-1.5 text-[0.84rem] leading-[1.5] text-muted-foreground">{risk.message}</p>
               </article>
             ))}
-            {latestRisks.length === 0 ? <p className="empty-state">No report risks yet.</p> : null}
+            {latestRisks.length === 0 ? <p className="text-[0.86rem] text-muted-foreground">No report risks yet.</p> : null}
           </div>
-        </div>
+        </SectionCard>
       </section>
     </>
   );
