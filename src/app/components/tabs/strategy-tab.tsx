@@ -1,6 +1,6 @@
 import type { DashboardData } from "../../dashboard-data";
 import { StrategySettingsForm } from "../strategy-settings-form";
-import { PanelHeading, StatusChip, type ChipTone } from "../ui";
+import { SectionCard, StatusChip, type ChipTone } from "../ui";
 
 function suggestionTone(status: string): ChipTone {
   switch (status) {
@@ -15,23 +15,22 @@ function suggestionTone(status: string): ChipTone {
 
 export function StrategyTab({ data }: { data: DashboardData }) {
   return (
-    <section className="grid-2 grid-major">
+    <section className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1">
       <StrategySettingsForm strategy={data.strategy} />
-      <div className="panel">
-        <PanelHeading title="Strategy suggestions" sub={`${data.suggestions.length} latest`} />
-        <div className="memory-list">
+      <SectionCard title="Strategy suggestions" sub={`${data.suggestions.length} latest`}>
+        <div className="grid gap-1">
           {data.suggestions.map((suggestion) => (
-            <article key={suggestion.id}>
-              <div className="memory-head">
+            <article className="-mx-2 grid gap-1 rounded-md px-2 py-2 transition-colors hover:bg-secondary" key={suggestion.id}>
+              <div className="flex flex-wrap items-center gap-2">
                 <StatusChip tone={suggestionTone(suggestion.status)} label={suggestion.status} />
-                <strong>{suggestion.title}</strong>
+                <strong className="text-[0.86rem] font-semibold [overflow-wrap:anywhere]">{suggestion.title}</strong>
               </div>
-              <p>{suggestion.rationale}</p>
+              <p className="text-[0.84rem] leading-[1.5] text-muted-foreground">{suggestion.rationale}</p>
             </article>
           ))}
-          {data.suggestions.length === 0 ? <p className="empty-state">No strategy suggestions yet.</p> : null}
+          {data.suggestions.length === 0 ? <p className="text-[0.86rem] text-muted-foreground">No strategy suggestions yet.</p> : null}
         </div>
-      </div>
+      </SectionCard>
     </section>
   );
 }
