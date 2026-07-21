@@ -19,6 +19,10 @@ const buttonVariants = cva(
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",
+        // Soft destructive outline (legacy `.ghost-button`): crit-tinted border
+        // and text, not shadcn's neutral `ghost`.
+        "destructive-outline":
+          "border-crit/35 bg-transparent text-crit hover:border-crit-soft hover:bg-crit-soft",
       },
       size: {
         default:
