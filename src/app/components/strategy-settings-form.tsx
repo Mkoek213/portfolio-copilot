@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo } from "react";
+import { useActionState, useEffect, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Loader2, Save, SlidersHorizontal } from "lucide-react";
@@ -8,8 +8,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
 import { updateStrategyAction, type ActionResult } from "../actions";
 import type { AssetClass, StrategyMemory } from "@/domain/portfolio/types";
+import { ASSET_CLASS_SERIES } from "./chart-series";
 import { ActionStatus } from "./action-status";
 import { SectionCard } from "./ui";
 
@@ -47,7 +49,10 @@ export function StrategySettingsForm({ strategy }: { strategy: StrategyMemory })
     () => Object.entries(strategy.targetAllocation) as Array<[AssetClass, number]>,
     [strategy.targetAllocation]
   );
-  const targetAllocationTotal = strategyAllocation.reduce((sum, [, value]) => sum + value, 0);
+  // Lift the allocation inputs into state so the guardrail bar updates live.
+  const [allocation, setAllocation] = useState<Record<string, number>>(() => Object.fromEntries(strategyAllocation.map(([key, value]) => [key, value])));
+  const allocationTotal = Object.values(allocation).reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+  const activeSegments = ASSET_CLASS_SERIES.filter((series) => (allocation[series.key] ?? 0) > 0);
 
   useEffect(() => {
     if (state.status === "success") {
@@ -144,15 +149,46 @@ export function StrategySettingsForm({ strategy }: { strategy: StrategyMemory })
         <details className="rounded-md border border-border bg-secondary p-3.5 [&[open]_summary]:mb-3">
           <summary className="flex cursor-pointer items-center justify-between gap-3 text-[0.88rem] font-semibold">
             <span>Portfolio guardrails</span>
-            <strong className={targetAllocationTotal === 100 ? "text-good" : "text-warn"}>{targetAllocationTotal}%</strong>
+            <strong className={allocationTotal === 100 ? "text-good" : "text-warn"}>{allocationTotal}%</strong>
           </summary>
           <div className="grid grid-cols-4 gap-3 max-[640px]:grid-cols-2">
-            {strategyAllocation.map(([assetClass, value]) => (
+            {strategyAllocation.map(([assetClass]) => (
               <label className={fieldLabel} key={assetClass}>
                 <span className={fieldSpan}>{assetClass}</span>
-                <Input name={assetClass} type="number" min="0" max="100" step="1" defaultValue={value} required />
+                <Input
+                  name={assetClass}
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  required
+                  value={allocation[assetClass] ?? 0}
+                  onChange={(event) => setAllocation((current) => ({ ...current, [assetClass]: Number(event.target.value) }))}
+                />
               </label>
             ))}
+          </div>
+
+          {/* Live target-allocation visualization (updates as the inputs change). */}
+          <div className="mt-3 grid gap-2">
+            <div className="flex h-[18px] gap-0.5 overflow-hidden rounded-md bg-muted" role="img" aria-label={`Target allocation total ${allocationTotal}%`}>
+              {activeSegments.map((series) => (
+                <span key={series.key} style={{ width: `${allocation[series.key]}%`, background: series.color }} title={`${series.label} ${allocation[series.key]}%`} />
+              ))}
+            </div>
+            <div className="flex items-center gap-2.5">
+              <Progress value={Math.min(allocationTotal, 100)} className="flex-1" />
+              <strong className={cn("text-[0.8rem] tabular-nums", allocationTotal === 100 ? "text-good" : "text-warn")}>{allocationTotal}% of 100%</strong>
+            </div>
+            {activeSegments.length > 0 ? (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[0.72rem] text-muted-foreground">
+                {activeSegments.map((series) => (
+                  <span key={series.key} className="inline-flex items-center gap-1">
+                    <i className="inline-block size-2 rounded-[2px]" style={{ background: series.color }} aria-hidden="true" /> {series.label} {allocation[series.key]}%
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className={cn(row3, "mt-3")}>
             <label className={fieldLabel}>

@@ -1,9 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { FileText, Inbox, Mail } from "lucide-react";
-import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { DashboardData } from "../../dashboard-data";
-import { DeleteAllResolvedImportsControl, ImportBatchActions, ImportPreviewCategoryControl, ImportPreviewReviewControl, MbankSyncModeControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
+import { DeleteAllResolvedImportsControl, ImportBatchActions, MbankSyncModeControl, RejectAllPendingImportsControl, SyncMbankControl } from "../import-controls";
+import { ImportPreviewList } from "../import-preview-list";
 import { SchedulerNowControl } from "../maintenance-controls";
 import { FactGrid, FactRow, SectionCard, StatusChip, importStatusTone } from "../ui";
 
@@ -105,33 +106,18 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
                 {batch.errorMessage ? <p className="text-[0.82rem] text-crit">{batch.errorMessage}</p> : null}
                 <ImportBatchActions batchId={batch.id} status={batch.status} pendingTransactions={pendingPreview.length} acceptedTransactions={acceptedCount} />
                 {batch.status === "PENDING_REVIEW" ? (
-                  <div className="grid min-w-0 gap-2">
-                    <div className="flex items-center gap-2.5 text-[0.78rem] text-muted-foreground">
-                      <strong className="font-[650] text-warn">{pendingPreview.length} pending</strong>
-                      <span>{acceptedCount} accepted</span>
-                      <span>{rejectedCount} rejected</span>
-                    </div>
-                    <div
-                      className="grid max-h-[min(62vh,680px)] gap-2 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]"
-                      tabIndex={0}
-                      aria-label={`Import transactions: ${pendingPreview.length} pending, ${acceptedCount} accepted, ${rejectedCount} rejected`}
-                    >
-                      {pendingPreview.map((item) => (
-                        <div
-                          className="grid grid-cols-[minmax(160px,0.6fr)_auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md border border-transparent bg-secondary px-2.5 py-2 max-[640px]:grid-cols-[auto_minmax(0,1fr)_auto]"
-                          key={`${batch.id}-${item.transactionIndex}`}
-                        >
-                          <div className="max-[640px]:col-span-full">
-                            <ImportPreviewCategoryControl batchId={batch.id} transactionIndex={item.transactionIndex} category={String(item.category)} />
-                          </div>
-                          <ImportPreviewReviewControl batchId={batch.id} transactionIndex={item.transactionIndex} />
-                          <strong className="text-[0.84rem] font-medium [overflow-wrap:anywhere]">{String(item.description)}</strong>
-                          <span className="whitespace-nowrap text-[0.84rem] font-semibold tabular-nums">{formatMoney(Number(item.amount), String(item.currency ?? "PLN"))}</span>
-                        </div>
-                      ))}
-                      {pendingPreview.length === 0 ? <p className="text-[0.86rem] text-muted-foreground">All transactions reviewed.</p> : null}
-                    </div>
-                  </div>
+                  <ImportPreviewList
+                    batchId={batch.id}
+                    items={pendingPreview.map((item) => ({
+                      transactionIndex: item.transactionIndex,
+                      description: String(item.description),
+                      amount: Number(item.amount),
+                      currency: String(item.currency ?? "PLN"),
+                      category: String(item.category)
+                    }))}
+                    acceptedCount={acceptedCount}
+                    rejectedCount={rejectedCount}
+                  />
                 ) : null}
               </article>
             );

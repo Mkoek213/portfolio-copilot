@@ -3,13 +3,60 @@
 import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bot, Loader2, Send, Sparkles, User } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { Bot, Check, Copy, Loader2, Send, Sparkles, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { sendChatMessageAction, type ActionResult } from "../actions";
 import { MarkdownLite } from "./markdown";
 import type { LocalLlmModelPreset } from "@/lib/llm/model-presets";
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
+      aria-label={copied ? "Copied" : "Copy message"}
+      title={copied ? "Copied" : "Copy message"}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // Clipboard can be unavailable (insecure context); ignore silently.
+        }
+      }}
+    >
+      {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+    </button>
+  );
+}
+
+function TypingIndicator() {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <article className="flex max-w-[min(720px,88%)] gap-2.5 self-start" aria-hidden="true">
+      <div className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand-strong">
+        <Bot size={15} />
+      </div>
+      <div className="flex items-center gap-1 rounded-xl rounded-tl-sm bg-secondary px-3.5 py-3">
+        {[0, 1, 2].map((dot) => (
+          <motion.span
+            key={dot}
+            className="block size-1.5 rounded-full bg-muted-foreground"
+            animate={reduceMotion ? undefined : { opacity: [0.3, 1, 0.3], y: [0, -2, 0] }}
+            transition={reduceMotion ? undefined : { duration: 0.9, repeat: Infinity, ease: "easeInOut", delay: dot * 0.15 }}
+          />
+        ))}
+      </div>
+    </article>
+  );
+}
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
@@ -65,8 +112,9 @@ export function ChatPanel({
   }, [router, state.status, state.timestamp, state.persisted]);
 
   useEffect(() => {
+    // Also scroll when the typing indicator appears/disappears.
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages.length]);
+  }, [messages.length, isPending]);
 
   const isError = state.status === "error";
 
@@ -80,30 +128,46 @@ export function ChatPanel({
             <p className="text-[0.84rem] leading-[1.55]">The assistant answers only from local data: transactions, reports, portfolio and memory. Nothing leaves this machine.</p>
           </div>
         ) : null}
-        {messages.map((message) => {
+        {messages.map((message, index) => {
           const isUser = message.role === "user";
+          const previous = index > 0 ? messages[index - 1] : null;
+          // Group consecutive messages from the same sender within 5 minutes:
+          // hide the repeated avatar + name/time header.
+          const grouped =
+            previous !== null &&
+            previous.role === message.role &&
+            new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000;
 
           return (
-            <article className={cn("flex max-w-[min(720px,88%)] gap-2.5", isUser ? "flex-row-reverse self-end" : "self-start")} key={message.id}>
+            <article
+              className={cn("group/msg flex max-w-[min(720px,88%)] gap-2.5", isUser ? "flex-row-reverse self-end" : "self-start", grouped && "-mt-2.5")}
+              key={message.id}
+            >
               <div
                 className={cn(
                   "mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full",
-                  isUser ? "bg-info-soft text-info" : "bg-brand-soft text-brand-strong"
+                  grouped ? "invisible" : isUser ? "bg-info-soft text-info" : "bg-brand-soft text-brand-strong"
                 )}
                 aria-hidden="true"
               >
-                {isUser ? <User size={15} /> : <Bot size={15} />}
+                {grouped ? null : isUser ? <User size={15} /> : <Bot size={15} />}
               </div>
               <div className={cn("min-w-0 rounded-xl px-3 py-2.5", isUser ? "rounded-tr-sm bg-brand-soft" : "rounded-tl-sm bg-secondary")}>
                 <header className="mb-0.5 flex items-baseline gap-2">
-                  <strong className="text-[0.74rem] font-[650]">{isUser ? "You" : "Copilot"}</strong>
-                  <time className="text-[0.68rem] text-muted-foreground">{formatTime(message.createdAt)}</time>
+                  {grouped ? null : (
+                    <>
+                      <strong className="text-[0.74rem] font-[650]">{isUser ? "You" : "Copilot"}</strong>
+                      <time className="text-[0.68rem] text-muted-foreground">{formatTime(message.createdAt)}</time>
+                    </>
+                  )}
+                  <CopyButton text={message.content} />
                 </header>
                 {isUser ? <p className="m-0 whitespace-pre-wrap text-[0.88rem] leading-[1.5] [overflow-wrap:anywhere]">{message.content}</p> : <MarkdownLite content={message.content} />}
               </div>
             </article>
           );
         })}
+        {isPending ? <TypingIndicator /> : null}
         {isError ? (
           <div className="grid gap-0.5 rounded-md bg-crit-soft px-3 py-2.5 text-[0.84rem] text-crit" role="alert">
             <strong>{state.message}</strong>

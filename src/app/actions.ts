@@ -450,6 +450,71 @@ export async function updateTransactionCategoryAction(_previousState: ActionResu
   }
 }
 
+// The DB column is an ungoverned String @default("pending"); validate the
+// allowed values at this Server Action boundary.
+const suggestionStatusSchema = z.object({
+  suggestionId: z.string().min(1),
+  status: z.enum(["pending", "accepted", "rejected"])
+});
+
+export async function updateSuggestionStatusAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  void _previousState;
+
+  try {
+    const parsed = suggestionStatusSchema.safeParse({
+      suggestionId: formString(formData, "suggestionId"),
+      status: formString(formData, "status")
+    });
+
+    if (!parsed.success) {
+      return result("error", "Suggestion was not updated.", "Missing suggestion id or invalid status.");
+    }
+
+    await prisma.strategySuggestion.update({
+      where: { id: parsed.data.suggestionId },
+      data: { status: parsed.data.status }
+    });
+    revalidatePath("/");
+    return result(
+      "success",
+      parsed.data.status === "accepted" ? "Suggestion accepted." : parsed.data.status === "rejected" ? "Suggestion rejected." : "Suggestion reset to pending."
+    );
+  } catch (error) {
+    return result("error", "Suggestion was not updated.", error instanceof Error ? error.message : "Unknown suggestion update error.");
+  }
+}
+
+export async function bulkUpdateImportPreviewReviewAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  void _previousState;
+
+  try {
+    const batchId = formString(formData, "batchId");
+    const reviewStatus = formString(formData, "reviewStatus");
+    const indexes = formData
+      .getAll("transactionIndex")
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value));
+
+    if (!batchId || indexes.length === 0 || (reviewStatus !== "ACCEPTED" && reviewStatus !== "REJECTED")) {
+      return result("error", "Transactions were not updated.", "Missing import batch, selection or review decision.");
+    }
+
+    let batch: Awaited<ReturnType<typeof updateImportPreviewTransactionReview>> | undefined;
+    for (const transactionIndex of indexes) {
+      batch = await updateImportPreviewTransactionReview(prisma, batchId, transactionIndex, reviewStatus);
+    }
+    revalidatePath("/");
+    const completed = batch !== undefined && (batch.status === "IMPORTED" || batch.status === "SKIPPED");
+    return result(
+      "success",
+      reviewStatus === "ACCEPTED" ? `${indexes.length} transaction${indexes.length === 1 ? "" : "s"} accepted and imported.` : `${indexes.length} transaction${indexes.length === 1 ? "" : "s"} rejected.`,
+      completed ? "All transactions in this import have been reviewed." : undefined
+    );
+  } catch (error) {
+    return result("error", "Transactions were not updated.", error instanceof Error ? error.message : "Unknown bulk review error.");
+  }
+}
+
 export async function sendChatMessageAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
   try {
     const content = formString(formData, "content");
