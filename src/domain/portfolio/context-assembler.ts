@@ -52,7 +52,7 @@ export async function assemblePortfolioContext(db: PrismaClient): Promise<Portfo
     getOrCreateUserFinancialProfile(db),
     db.bankTransaction.findMany({
       where: { operationDate: { gte: recentStart } },
-      orderBy: { operationDate: "desc" },
+      orderBy: [{ operationDate: "desc" }, { id: "desc" }],
       take: 200
     }),
     db.importBatch.findMany({

@@ -216,7 +216,7 @@ export async function loadDashboardData(params: SearchParams) {
       prisma.strategySettings.findUnique({ where: { resourceId: defaultStrategy.resourceId } }),
       prisma.userFinancialProfile.findUnique({ where: { resourceId: defaultStrategy.resourceId } }),
       prisma.importBatch.findMany({ orderBy: { createdAt: "desc" }, take: 24, include: { transactions: true } }),
-      prisma.bankTransaction.findMany({ where: transactionWhere, orderBy: { operationDate: "desc" }, take: 200, include: { importBatch: true } }),
+      prisma.bankTransaction.findMany({ where: transactionWhere, orderBy: [{ operationDate: "desc" }, { id: "desc" }], take: 200, include: { importBatch: true } }),
       prisma.strategySuggestion.findMany({ orderBy: { createdAt: "desc" }, take: 8 }),
       prisma.traceSpan.findMany({ orderBy: { startedAt: "desc" }, take: 16 }),
       prisma.agentRun.count(),
