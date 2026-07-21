@@ -1,6 +1,7 @@
 import { formatDate } from "@/lib/format";
 import type { DashboardData } from "../../dashboard-data";
-import { PanelHeading, StatusChip, type ChipTone } from "../ui";
+import { MemoryPanels } from "../memory-panels";
+import { type ChipTone } from "../ui";
 
 function priorityTone(priority: string): ChipTone {
   switch (priority) {
@@ -15,40 +16,30 @@ function priorityTone(priority: string): ChipTone {
   }
 }
 
+/** Derive a meaningful heading from a reflection's summary (no topic column). */
+function reflectionTitle(summary: string): string {
+  const firstLine = summary.split(/\n/)[0]?.trim() ?? "";
+  const firstSentence = firstLine.split(/(?<=[.!?])\s/)[0] ?? firstLine;
+  const trimmed = firstSentence.length > 72 ? `${firstSentence.slice(0, 72).trimEnd()}…` : firstSentence;
+  return trimmed || "Reflection";
+}
+
 export function MemoryTab({ data }: { data: DashboardData }) {
-  return (
-    <section className="grid-2 grid-major">
-      <div className="panel">
-        <PanelHeading title="Observations" sub={`${data.observations.length} latest · ${data.observationCount} total`} />
-        <div className="memory-list">
-          {data.observations.map((observation) => (
-            <article key={observation.id}>
-              <div className="memory-head">
-                <StatusChip tone={priorityTone(observation.priority)} label={observation.priority.toLowerCase()} />
-                <strong>{observation.topic}</strong>
-                <span className="cell-faint">{formatDate(observation.createdAt)}</span>
-              </div>
-              <p>{observation.content}</p>
-            </article>
-          ))}
-          {data.observations.length === 0 ? <p className="empty-state">No observations yet.</p> : null}
-        </div>
-      </div>
-      <div className="panel">
-        <PanelHeading title="Reflections" sub={`${data.reflections.length} latest`} />
-        <div className="memory-list">
-          {data.reflections.map((reflection) => (
-            <article key={reflection.id}>
-              <div className="memory-head">
-                <strong>Reflection</strong>
-                <span className="cell-faint">{formatDate(reflection.createdAt)}</span>
-              </div>
-              <p>{reflection.summary}</p>
-            </article>
-          ))}
-          {data.reflections.length === 0 ? <p className="empty-state">No reflections yet.</p> : null}
-        </div>
-      </div>
-    </section>
-  );
+  const observations = data.observations.map((observation) => ({
+    id: observation.id,
+    topic: observation.topic,
+    content: observation.content,
+    priority: observation.priority,
+    tone: priorityTone(observation.priority),
+    dateLabel: formatDate(observation.createdAt)
+  }));
+
+  const reflections = data.reflections.map((reflection) => ({
+    id: reflection.id,
+    title: reflectionTitle(reflection.summary),
+    summary: reflection.summary,
+    dateLabel: formatDate(reflection.createdAt)
+  }));
+
+  return <MemoryPanels observations={observations} reflections={reflections} />;
 }
