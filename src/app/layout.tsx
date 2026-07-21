@@ -3,6 +3,7 @@ import "./globals.css";
 import "./legacy.css";
 import { ThemeProvider } from "./components/theme-provider";
 import { ThemeColorSync } from "./components/theme-color-sync";
+import { AmbientBackground } from "./components/ambient-background";
 
 export const metadata: Metadata = {
   title: "Portfolio Copilot",
@@ -21,11 +22,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="pl" suppressHydrationWarning>
       <body>
         <ThemeProvider>
-          <div className="ambient-bg" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
+          <AmbientBackground />
           <ThemeColorSync />
           {children}
         </ThemeProvider>
