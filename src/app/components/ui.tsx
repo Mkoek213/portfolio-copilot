@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { AlertCircle, AlertTriangle, CheckCircle2, Info, MinusCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge, type badgeVariants } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import type { VariantProps } from "class-variance-authority";
 
 export type ChipTone = "good" | "warn" | "serious" | "crit" | "info" | "muted";
@@ -113,6 +113,39 @@ export function PanelHeading({ title, sub, action }: { title: string; sub?: Reac
       </div>
       {action ?? null}
     </div>
+  );
+}
+
+/**
+ * The migrated `.panel` + `PanelHeading` pattern: a `Card` with a bordered
+ * header (title + optional description + action) over its content. Used by
+ * every tab as it migrates in plan 14; replaces `PanelHeading` (which stays for
+ * not-yet-migrated tabs and is removed once the last one drops it).
+ */
+export function SectionCard({
+  title,
+  sub,
+  action,
+  className,
+  contentClassName,
+  children
+}: {
+  title: ReactNode;
+  sub?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+  contentClassName?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className={cn("min-w-0 gap-4 shadow-card", className)}>
+      <CardHeader className="border-b">
+        <CardTitle className="text-[0.98rem] font-[650] tracking-[-0.005em] [overflow-wrap:anywhere]">{title}</CardTitle>
+        {sub ? <CardDescription className="text-[0.79rem]">{sub}</CardDescription> : null}
+        {action ? <CardAction className="text-muted-foreground">{action}</CardAction> : null}
+      </CardHeader>
+      <CardContent className={cn(contentClassName)}>{children}</CardContent>
+    </Card>
   );
 }
 
