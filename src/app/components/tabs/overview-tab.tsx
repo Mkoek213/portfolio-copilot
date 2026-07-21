@@ -2,7 +2,8 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { formatDateTime, formatMoney, formatPercent } from "@/lib/format";
 import type { DashboardData } from "../../dashboard-data";
-import { AllocationStack, CashflowChart, CategoryBars, Sparkline, assetClassSeries } from "../charts";
+import { AllocationStack, CashflowChart, CategoryBars, Sparkline } from "../charts";
+import { assetClassSeries } from "../chart-series";
 import { PanelHeading, StatTile, StatusChip, riskTone } from "../ui";
 
 type RiskFlag = { level: string; topic: string; message: string };
