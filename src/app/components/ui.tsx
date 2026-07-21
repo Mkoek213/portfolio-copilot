@@ -104,23 +104,10 @@ export function StatTile({
   );
 }
 
-export function PanelHeading({ title, sub, action }: { title: string; sub?: ReactNode; action?: ReactNode }) {
-  return (
-    <div className="panel-heading">
-      <div>
-        <h2>{title}</h2>
-        {sub ? <span>{sub}</span> : null}
-      </div>
-      {action ?? null}
-    </div>
-  );
-}
-
 /**
- * The migrated `.panel` + `PanelHeading` pattern: a `Card` with a bordered
- * header (title + optional description + action) over its content. Used by
- * every tab as it migrates in plan 14; replaces `PanelHeading` (which stays for
- * not-yet-migrated tabs and is removed once the last one drops it).
+ * The panel pattern every tab uses: a `Card` with a bordered header (title +
+ * optional description + action) over its content. Replaced the legacy
+ * `.panel` + `PanelHeading` combo during the plan-14 migration.
  */
 export function SectionCard({
   title,

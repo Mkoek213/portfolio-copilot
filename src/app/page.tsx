@@ -25,7 +25,7 @@ import { ImportsTab } from "./components/tabs/imports-tab";
 import { StrategyTab } from "./components/tabs/strategy-tab";
 import { MemoryTab } from "./components/tabs/memory-tab";
 import { SettingsTab } from "./components/tabs/settings-tab";
-import { PanelHeading } from "./components/ui";
+import { SectionCard } from "./components/ui";
 import { loadDashboardData, param, type SearchParams } from "./dashboard-data";
 
 export const dynamic = "force-dynamic";
@@ -178,14 +178,15 @@ export default async function Home({ searchParams }: { searchParams?: Promise<Se
             {selectedTab === "strategy" ? <StrategyTab data={data} /> : null}
             {selectedTab === "memory" ? <MemoryTab data={data} /> : null}
             {selectedTab === "chat" ? (
-              <section className="panel chat-panel-shell">
-                <PanelHeading
-                  title="Local assistant"
-                  sub={`${data.chatMessages.length} messages · answers only from local data`}
-                  action={<Bot aria-hidden="true" className="panel-icon" />}
-                />
+              <SectionCard
+                title="Local assistant"
+                sub={`${data.chatMessages.length} messages · answers only from local data`}
+                action={<Bot aria-hidden="true" size={18} />}
+                className="min-h-[calc(100vh-200px)]"
+                contentClassName="flex min-h-0 flex-1 flex-col"
+              >
                 <ChatPanel messages={data.chatMessages} modelPresets={data.localLlmModelPresets} defaultModel={data.configuredLocalLlmModel} />
-              </section>
+              </SectionCard>
             ) : null}
             {selectedTab === "settings" ? <SettingsTab data={data} /> : null}
           </TabTransition>
