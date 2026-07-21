@@ -4,6 +4,9 @@ import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Bot, Loader2, Send, Sparkles, User } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { sendChatMessageAction, type ActionResult } from "../actions";
 import { MarkdownLite } from "./markdown";
 import type { LocalLlmModelPreset } from "@/lib/llm/model-presets";
@@ -21,10 +24,10 @@ function SendButton() {
   const { pending } = useFormStatus();
 
   return (
-    <button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>
-      {pending ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+    <Button type="submit" disabled={pending} aria-busy={pending} className="w-full">
+      {pending ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
       {pending ? "Thinking" : "Send"}
-    </button>
+    </Button>
   );
 }
 
@@ -68,56 +71,68 @@ export function ChatPanel({
   const isError = state.status === "error";
 
   return (
-    <div className="chat-layout">
-      <div className="message-list" ref={listRef} aria-live="polite">
+    <div className="flex min-h-0 flex-1 flex-col gap-3.5">
+      <div className="flex min-h-[300px] flex-1 flex-col gap-3.5 overflow-y-auto p-1 max-h-[calc(100vh-380px)]" ref={listRef} aria-live="polite">
         {messages.length === 0 ? (
-          <div className="chat-empty">
-            <Sparkles aria-hidden="true" />
-            <h3>Ask about your money</h3>
-            <p>The assistant answers only from local data: transactions, reports, portfolio and memory. Nothing leaves this machine.</p>
+          <div className="m-auto grid max-w-[400px] justify-items-center gap-2 px-4 py-8 text-center text-muted-foreground">
+            <Sparkles aria-hidden="true" className="text-brand" />
+            <h3 className="text-[0.95rem] font-[650] text-foreground">Ask about your money</h3>
+            <p className="text-[0.84rem] leading-[1.55]">The assistant answers only from local data: transactions, reports, portfolio and memory. Nothing leaves this machine.</p>
           </div>
         ) : null}
         {messages.map((message) => {
           const isUser = message.role === "user";
 
           return (
-            <article className={`message ${isUser ? "message-user" : "message-assistant"}`} key={message.id}>
-              <div className="message-avatar" aria-hidden="true">
+            <article className={cn("flex max-w-[min(720px,88%)] gap-2.5", isUser ? "flex-row-reverse self-end" : "self-start")} key={message.id}>
+              <div
+                className={cn(
+                  "mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full",
+                  isUser ? "bg-info-soft text-info" : "bg-brand-soft text-brand-strong"
+                )}
+                aria-hidden="true"
+              >
                 {isUser ? <User size={15} /> : <Bot size={15} />}
               </div>
-              <div className="message-body">
-                <header>
-                  <strong>{isUser ? "You" : "Copilot"}</strong>
-                  <time>{formatTime(message.createdAt)}</time>
+              <div className={cn("min-w-0 rounded-xl px-3 py-2.5", isUser ? "rounded-tr-sm bg-brand-soft" : "rounded-tl-sm bg-secondary")}>
+                <header className="mb-0.5 flex items-baseline gap-2">
+                  <strong className="text-[0.74rem] font-[650]">{isUser ? "You" : "Copilot"}</strong>
+                  <time className="text-[0.68rem] text-muted-foreground">{formatTime(message.createdAt)}</time>
                 </header>
-                {isUser ? <p className="message-text">{message.content}</p> : <MarkdownLite content={message.content} />}
+                {isUser ? <p className="m-0 whitespace-pre-wrap text-[0.88rem] leading-[1.5] [overflow-wrap:anywhere]">{message.content}</p> : <MarkdownLite content={message.content} />}
               </div>
             </article>
           );
         })}
         {isError ? (
-          <div className="chat-error" role="alert">
+          <div className="grid gap-0.5 rounded-md bg-crit-soft px-3 py-2.5 text-[0.84rem] text-crit" role="alert">
             <strong>{state.message}</strong>
-            {state.detail ? <span>{state.detail}</span> : null}
+            {state.detail ? <span className="opacity-90">{state.detail}</span> : null}
           </div>
         ) : null}
       </div>
 
-      <form action={action} className="chat-composer" ref={formRef}>
+      <form action={action} className="grid gap-2.5 border-t border-border pt-3.5" ref={formRef}>
         {messages.length === 0 ? (
-          <div className="prompt-chips" aria-label="Suggested questions">
+          <div className="flex flex-wrap gap-2" aria-label="Suggested questions">
             {SUGGESTED_PROMPTS.map((prompt) => (
-              <button key={prompt} type="button" className="prompt-chip" onClick={() => setDraft(prompt)}>
+              <button
+                key={prompt}
+                type="button"
+                className="rounded-full border border-input bg-background px-3 py-1.5 text-[0.8rem] text-muted-foreground transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand-strong"
+                onClick={() => setDraft(prompt)}
+              >
                 {prompt}
               </button>
             ))}
           </div>
         ) : null}
-        <div className="chat-input-row">
-          <textarea
+        <div className="flex items-stretch gap-2.5 max-[640px]:flex-col">
+          <Textarea
             name="content"
             rows={2}
             required
+            className="min-h-[58px] flex-1 resize-y text-[0.9rem]"
             placeholder="Ask about spending, allocation or reports… (Enter to send)"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -133,9 +148,13 @@ export function ChatPanel({
               }
             }}
           />
-          <div className="chat-input-side">
-            <label className="chat-model" aria-label="Local model">
-              <select name="llmModel" defaultValue={defaultModel}>
+          <div className="flex w-[168px] flex-shrink-0 flex-col justify-end gap-2 max-[640px]:w-full max-[640px]:flex-row">
+            <label className="max-[640px]:flex-1" aria-label="Local model">
+              <select
+                name="llmModel"
+                defaultValue={defaultModel}
+                className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-[0.78rem] text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
                 {modelPresets.map((preset) => (
                   <option key={preset.key} value={preset.model}>
                     {preset.label}
