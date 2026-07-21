@@ -1,8 +1,13 @@
 import type { Prisma } from "@prisma/client";
+import { FileText, History, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
+import { Badge } from "@/components/ui/badge";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { DashboardData } from "../../dashboard-data";
 import { MarkdownLite } from "../markdown";
-import { StatusChip, riskTone, runStatusTone } from "../ui";
+import { SectionCard, StatusChip, riskTone, runStatusTone } from "../ui";
 
 type RiskFlag = { level: string; topic: string; message: string };
 
@@ -33,15 +38,15 @@ function ReportMeta({ report }: { report: DashboardData["reports"][number] }) {
 
   return (
     <>
-      <div className="chip-row">
+      <div className="mb-3 flex flex-wrap gap-1.5">
         <StatusChip tone={report.criticVerdict === "PASS" ? "good" : "warn"} label={`critic ${report.criticVerdict.toLowerCase()}`} />
         <StatusChip tone={runStatusTone(report.run.status)} label={`run ${report.run.status.toLowerCase()}`} />
-        <span className="chip chip-plain">{report.reporterSource}</span>
-        <span className="chip chip-plain">{report.reporterModel ?? "deterministic"}</span>
-        <span className="chip chip-plain">{report.reportType.toLowerCase()}</span>
-        {hasRealTransactions ? <StatusChip tone="good" label="real transactions" /> : <span className="chip chip-plain">sample data only</span>}
+        <Badge variant="muted">{report.reporterSource}</Badge>
+        <Badge variant="muted">{report.reporterModel ?? "deterministic"}</Badge>
+        <Badge variant="muted">{report.reportType.toLowerCase()}</Badge>
+        {hasRealTransactions ? <StatusChip tone="good" label="real transactions" /> : <Badge variant="muted">sample data only</Badge>}
       </div>
-      <p className="meta-line">Run {shortId(report.run.id)} · sources: {sources.length > 0 ? sources.join(", ") : "none saved"}</p>
+      <p className="mb-3 text-[0.78rem] text-muted-foreground [overflow-wrap:anywhere]">Run {shortId(report.run.id)} · sources: {sources.length > 0 ? sources.join(", ") : "none saved"}</p>
     </>
   );
 }
@@ -54,7 +59,7 @@ function ReportRisks({ report }: { report: DashboardData["reports"][number] }) {
   }
 
   return (
-    <div className="chip-row report-risk-row">
+    <div className="mb-3 flex flex-wrap gap-1.5">
       {risks.slice(0, 6).map((risk, index) => (
         <StatusChip key={`${risk.topic}-${index}`} tone={riskTone(risk.level)} label={risk.topic} />
       ))}
@@ -62,60 +67,77 @@ function ReportRisks({ report }: { report: DashboardData["reports"][number] }) {
   );
 }
 
+function ReportSkeleton() {
+  return (
+    <div className="rounded-xl border border-border bg-card p-5 shadow-card">
+      <div className="flex items-center gap-2 text-[0.82rem] text-muted-foreground">
+        <Loader2 size={16} aria-hidden="true" className="animate-spin" /> Generating a report…
+      </div>
+      <div className="mt-4 grid gap-2.5">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-5/6" />
+        <Skeleton className="h-3 w-4/6" />
+      </div>
+    </div>
+  );
+}
+
 export function ReportsTab({ data }: { data: DashboardData }) {
   const [latest, ...older] = data.reports;
+  const generating = data.schedulerState.running;
 
   if (!latest) {
     return (
-      <section className="stack">
-        <div className="panel">
-          <p className="empty-state">No reports saved. Run the analysis to generate the first local report.</p>
-        </div>
-      </section>
+      <SectionCard title="Reports" sub="Locally generated AI analysis reports" action={<FileText size={18} aria-hidden="true" />}>
+        {generating ? <ReportSkeleton /> : <p className="flex items-center gap-2 text-[0.86rem] text-muted-foreground"><FileText size={16} aria-hidden="true" /> No reports saved. Run the analysis to generate the first local report.</p>}
+      </SectionCard>
     );
   }
 
   return (
-    <section className="stack">
-      <article className="panel report-panel">
-        <div className="panel-heading">
-          <div>
-            <h2>{latest.title}</h2>
-            <span>{formatDateTime(latest.createdAt)} · latest report</span>
-          </div>
-        </div>
+    <section className="grid gap-[18px]">
+      {generating ? <ReportSkeleton /> : null}
+
+      <SectionCard
+        title={latest.title}
+        sub={`${formatDateTime(latest.createdAt)} · latest report`}
+        action={<FileText size={18} aria-hidden="true" />}
+      >
         <ReportMeta report={latest} />
         <ReportRisks report={latest} />
         <MarkdownLite content={stripTitleHeading(latest.markdown, latest.title)} />
-      </article>
+      </SectionCard>
 
       {older.length > 0 ? (
-        <div className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Report history</h2>
-              <span>{older.length} earlier report{older.length === 1 ? "" : "s"}</span>
-            </div>
+        <SectionCard
+          title="Report history"
+          sub={`${older.length} earlier report${older.length === 1 ? "" : "s"}`}
+          action={<History size={18} aria-hidden="true" />}
+        >
+          <div className="overflow-hidden rounded-lg border border-border">
+            <Accordion type="single" collapsible>
+              {older.map((report) => (
+                <AccordionItem value={report.id} key={report.id} className="px-3.5">
+                  <AccordionTrigger>
+                    <div className="grid gap-0.5 pr-2 text-left">
+                      <span className="text-[0.86rem] font-semibold">{report.title}</span>
+                      <span className="text-[0.76rem] font-normal text-muted-foreground">
+                        {formatDateTime(report.createdAt)} · {report.reporterSource} ·{" "}
+                        <span className={cn(report.criticVerdict === "PASS" ? "text-good" : "text-warn")}>critic {report.criticVerdict.toLowerCase()}</span>
+                      </span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <ReportMeta report={report} />
+                    <p className="mb-2.5 text-[0.86rem] text-muted-foreground">{report.summary}</p>
+                    <MarkdownLite content={stripTitleHeading(report.markdown, report.title)} />
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
           </div>
-          <div className="report-history-list">
-            {older.map((report) => (
-              <details className="report-fold" key={report.id}>
-                <summary>
-                  <span className="report-fold-title">{report.title}</span>
-                  <span className="report-fold-meta">
-                    {formatDateTime(report.createdAt)} · {report.reporterSource} ·{" "}
-                    <span className={report.criticVerdict === "PASS" ? "text-good" : "text-warn"}>critic {report.criticVerdict.toLowerCase()}</span>
-                  </span>
-                </summary>
-                <div className="report-fold-body">
-                  <ReportMeta report={report} />
-                  <p>{report.summary}</p>
-                  <MarkdownLite content={stripTitleHeading(report.markdown, report.title)} />
-                </div>
-              </details>
-            ))}
-          </div>
-        </div>
+        </SectionCard>
       ) : null}
     </section>
   );
