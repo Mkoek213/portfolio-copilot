@@ -24,7 +24,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     if (token.startsWith("**")) {
       nodes.push(<strong key={`${keyPrefix}-${index}`}>{token.slice(2, -2)}</strong>);
     } else if (token.startsWith("`")) {
-      nodes.push(<code key={`${keyPrefix}-${index}`}>{token.slice(1, -1)}</code>);
+      nodes.push(<code key={`${keyPrefix}-${index}`} className="rounded border border-border bg-secondary px-1.5 py-0.5 font-mono text-[0.8em]">{token.slice(1, -1)}</code>);
     } else {
       nodes.push(<em key={`${keyPrefix}-${index}`}>{token.slice(1, -1)}</em>);
     }
@@ -53,6 +53,9 @@ function isTableDivider(line: string) {
   return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes("-");
 }
 
+const thClass = "border-b border-[color:var(--input)] px-2.5 py-[7px] text-left text-[0.7rem] font-semibold uppercase tracking-[0.05em] text-muted-foreground";
+const tdClass = "border-b border-border p-2.5 align-top";
+
 export function MarkdownLite({ content }: { content: string }) {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
@@ -80,8 +83,8 @@ export function MarkdownLite({ content }: { content: string }) {
 
       index += 1;
       blocks.push(
-        <pre className="md-code" key={nextKey()}>
-          <code>{codeLines.join("\n")}</code>
+        <pre className="mb-3 overflow-x-auto rounded-lg border border-border bg-secondary p-3" key={nextKey()}>
+          <code className="border-0 bg-transparent p-0 text-[0.78rem] leading-normal">{codeLines.join("\n")}</code>
         </pre>
       );
       continue;
@@ -93,7 +96,13 @@ export function MarkdownLite({ content }: { content: string }) {
       const level = heading[1].length;
       const text = renderInline(heading[2], nextKey());
       blocks.push(
-        level === 1 ? <h3 key={nextKey()}>{text}</h3> : level === 2 ? <h4 key={nextKey()}>{text}</h4> : <h5 key={nextKey()}>{text}</h5>
+        level === 1 ? (
+          <h3 className="mb-2 mt-[18px] text-[1.02rem] font-[650] first:mt-0" key={nextKey()}>{text}</h3>
+        ) : level === 2 ? (
+          <h4 className="mb-1.5 mt-4 text-[0.9rem] font-[650]" key={nextKey()}>{text}</h4>
+        ) : (
+          <h5 className="mb-1 mt-3 text-[0.84rem] font-[650]" key={nextKey()}>{text}</h5>
+        )
       );
       index += 1;
       continue;
@@ -103,11 +112,11 @@ export function MarkdownLite({ content }: { content: string }) {
       const items: ReactNode[] = [];
 
       while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
-        items.push(<li key={nextKey()}>{renderInline(lines[index].replace(/^\s*[-*]\s+/, ""), nextKey())}</li>);
+        items.push(<li className="my-1" key={nextKey()}>{renderInline(lines[index].replace(/^\s*[-*]\s+/, ""), nextKey())}</li>);
         index += 1;
       }
 
-      blocks.push(<ul key={nextKey()}>{items}</ul>);
+      blocks.push(<ul className="mb-3 list-disc pl-5" key={nextKey()}>{items}</ul>);
       continue;
     }
 
@@ -115,11 +124,11 @@ export function MarkdownLite({ content }: { content: string }) {
       const items: ReactNode[] = [];
 
       while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
-        items.push(<li key={nextKey()}>{renderInline(lines[index].replace(/^\s*\d+\.\s+/, ""), nextKey())}</li>);
+        items.push(<li className="my-1" key={nextKey()}>{renderInline(lines[index].replace(/^\s*\d+\.\s+/, ""), nextKey())}</li>);
         index += 1;
       }
 
-      blocks.push(<ol key={nextKey()}>{items}</ol>);
+      blocks.push(<ol className="mb-3 list-decimal pl-5" key={nextKey()}>{items}</ol>);
       continue;
     }
 
@@ -134,12 +143,12 @@ export function MarkdownLite({ content }: { content: string }) {
       }
 
       blocks.push(
-        <div className="md-table-wrap" key={nextKey()}>
-          <table className="data-table">
+        <div className="mb-3 overflow-x-auto" key={nextKey()}>
+          <table className="w-full border-collapse text-[0.86rem]">
             <thead>
               <tr>
                 {headerCells.map((cell) => (
-                  <th key={nextKey()} scope="col">{renderInline(cell, nextKey())}</th>
+                  <th key={nextKey()} scope="col" className={thClass}>{renderInline(cell, nextKey())}</th>
                 ))}
               </tr>
             </thead>
@@ -147,7 +156,7 @@ export function MarkdownLite({ content }: { content: string }) {
               {rows.map((row) => (
                 <tr key={nextKey()}>
                   {row.map((cell) => (
-                    <td key={nextKey()}>{renderInline(cell, nextKey())}</td>
+                    <td key={nextKey()} className={tdClass}>{renderInline(cell, nextKey())}</td>
                   ))}
                 </tr>
               ))}
@@ -173,8 +182,8 @@ export function MarkdownLite({ content }: { content: string }) {
       index += 1;
     }
 
-    blocks.push(<p key={nextKey()}>{renderInline(paragraph.join(" "), nextKey())}</p>);
+    blocks.push(<p className="mb-2.5 last:mb-0" key={nextKey()}>{renderInline(paragraph.join(" "), nextKey())}</p>);
   }
 
-  return <div className="markdown">{blocks}</div>;
+  return <div className="text-[0.88rem] leading-[1.6]">{blocks}</div>;
 }
