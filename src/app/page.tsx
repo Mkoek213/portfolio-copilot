@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Bot,
   Brain,
@@ -113,10 +114,10 @@ export default async function Home({ searchParams }: { searchParams?: Promise<Se
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
-              <a className={selectedTab === tab.key ? "active" : undefined} href={`/?tab=${tab.key}`} key={tab.key} aria-current={selectedTab === tab.key ? "page" : undefined}>
+              <Link className={selectedTab === tab.key ? "active" : undefined} href={`/?tab=${tab.key}`} key={tab.key} aria-current={selectedTab === tab.key ? "page" : undefined}>
                 <Icon size={17} aria-hidden="true" />
                 <span>{tab.label}</span>
-              </a>
+              </Link>
             );
           })}
         </nav>
@@ -145,7 +146,7 @@ export default async function Home({ searchParams }: { searchParams?: Promise<Se
           />
         </header>
 
-        <main className="content">
+        <main className="content" key={selectedTab}>
           {selectedTab === "overview" ? <OverviewTab data={data} /> : null}
           {selectedTab === "transactions" ? <TransactionsTab data={data} params={params} /> : null}
           {selectedTab === "reports" ? <ReportsTab data={data} /> : null}
