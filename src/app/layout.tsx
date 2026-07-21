@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import "./legacy.css";
 import { ThemeProvider } from "./components/theme-provider";
 import { ThemeColorSync } from "./components/theme-color-sync";
 import { AmbientBackground } from "./components/ambient-background";

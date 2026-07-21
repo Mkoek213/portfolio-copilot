@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Brain, Search, Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { SectionCard, StatusChip, type ChipTone } from "./ui";
 
@@ -41,7 +41,7 @@ export function MemoryPanels({ observations, reflections }: { observations: Memo
       </div>
 
       <div className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1">
-        <SectionCard title="Observations" sub={`${filteredObservations.length} shown · ${observations.length} loaded`}>
+        <SectionCard title="Observations" sub={`${filteredObservations.length} shown · ${observations.length} loaded`} action={<Brain size={18} aria-hidden="true" />}>
           <div className="grid gap-1">
             {filteredObservations.map((observation) => (
               <article className={itemClass} key={observation.id}>
@@ -59,7 +59,7 @@ export function MemoryPanels({ observations, reflections }: { observations: Memo
           </div>
         </SectionCard>
 
-        <SectionCard title="Reflections" sub={`${filteredReflections.length} shown · ${reflections.length} loaded`}>
+        <SectionCard title="Reflections" sub={`${filteredReflections.length} shown · ${reflections.length} loaded`} action={<Sparkles size={18} aria-hidden="true" />}>
           <div className="grid gap-1">
             {filteredReflections.map((reflection) => (
               <article className={itemClass} key={reflection.id}>
