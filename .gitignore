@@ -248,3 +248,9 @@ redacted-screenshots/
 
 # Generated roadmap export
 ROADMAP.pdf
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
