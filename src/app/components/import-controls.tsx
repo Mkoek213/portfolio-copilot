@@ -7,10 +7,18 @@ import { Check, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { EXPENSE_CATEGORY_OPTIONS } from "@/domain/portfolio/categories";
 import { MBANK_SYNC_MODE_OPTIONS } from "@/domain/imports/mbank-sync-mode";
 import type { MbankSyncMode } from "@prisma/client";
+import { Button as UiButton } from "@/components/ui/button";
 import { confirmImportAction, deleteAllResolvedImportsAction, deleteImportAction, rejectAllPendingImportsAction, rejectImportAction, retryImportParseAction, syncMbankGmailAction, updateImportPreviewCategoryAction, updateImportPreviewReviewAction, updateMbankSyncModeAction, updateTransactionCategoryAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
 const initialState: ActionResult = { status: "idle", message: "" };
+
+// Native <select> chrome shared by CategorySelect and the sync-mode select.
+// Explicit bg-background text-foreground keeps the option list correct in dark
+// mode (incl. Windows chrome). See plan 16.
+const selectClass =
+  "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-[0.8rem] text-foreground outline-none transition-colors hover:border-ring/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-65";
+const stackClass = "my-1 grid justify-items-start gap-2.5";
 
 type ImportActionKind = "sync" | "confirm" | "reject" | "retry" | "reject-all" | "delete" | "delete-all";
 
@@ -28,7 +36,7 @@ function CategorySelect({ category, label }: { category: string; label: string }
 
   return (
     <select
-      className="h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-[0.8rem] text-foreground outline-none transition-colors hover:border-ring/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-65"
+      className={selectClass}
       name="category"
       value={value}
       disabled={pending}
@@ -63,10 +71,10 @@ function Button({ kind, children, disabled = false, title }: { kind: ImportActio
   const isGhost = kind === "reject" || kind === "reject-all" || kind === "delete" || kind === "delete-all";
 
   return (
-    <button className={isGhost ? "ghost-button" : "secondary-button"} type="submit" disabled={pending || disabled} aria-busy={pending} title={title}>
-      <Icon className={pending ? "spin" : undefined} size={18} aria-hidden="true" />
+    <UiButton variant={isGhost ? "destructive-outline" : "outline"} size="sm" type="submit" disabled={pending || disabled} aria-busy={pending} title={title}>
+      <Icon className={pending ? "animate-spin" : undefined} size={16} aria-hidden="true" />
       {children}
-    </button>
+    </UiButton>
   );
 }
 
@@ -81,7 +89,7 @@ export function SyncMbankControl({ syncMode }: { syncMode: MbankSyncMode }) {
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
+    <div className={stackClass}>
       <form action={action}>
         <Button kind="sync">{syncMode === "STATEMENT_ONLY" ? "Sync statements now" : syncMode === "DAILY_ONLY" ? "Sync notifications now" : "Sync now"}</Button>
       </form>
@@ -94,9 +102,9 @@ function SyncModeSaveButton() {
   const { pending } = useFormStatus();
 
   return (
-    <button className="category-save-button" type="submit" disabled={pending} aria-busy={pending} aria-label="Save import mode" title="Save import mode">
-      {pending ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
-    </button>
+    <UiButton variant="outline" size="icon" type="submit" disabled={pending} aria-busy={pending} aria-label="Save import mode" title="Save import mode" className="text-brand-strong">
+      {pending ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
+    </UiButton>
   );
 }
 
@@ -111,9 +119,9 @@ export function MbankSyncModeControl({ syncMode }: { syncMode: MbankSyncMode }) 
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
-      <form className="category-form sync-mode-form" action={action}>
-        <select className="category-select" name="syncMode" defaultValue={syncMode} aria-label="mBank import mode">
+    <div className={stackClass}>
+      <form className="grid w-full grid-cols-[minmax(130px,1fr)_auto] items-center gap-1.5" action={action}>
+        <select className={selectClass} name="syncMode" defaultValue={syncMode} aria-label="mBank import mode">
           {MBANK_SYNC_MODE_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
@@ -136,7 +144,7 @@ export function RejectAllPendingImportsControl() {
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
+    <div className={stackClass}>
       <form action={action}>
         <Button kind="reject-all">Reject all pending</Button>
       </form>
@@ -156,7 +164,7 @@ export function DeleteAllResolvedImportsControl() {
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
+    <div className={stackClass}>
       <form action={action}>
         <Button kind="delete-all">Delete failed/skipped</Button>
       </form>
@@ -200,7 +208,7 @@ export function ImportBatchActions({
   }
 
   return (
-    <div className="review-actions">
+    <div className="flex flex-wrap items-start gap-2">
       {canConfirm ? (
         <form action={confirmAction}>
           <input type="hidden" name="batchId" value={batchId} />
@@ -236,8 +244,9 @@ function ReviewDecisionButton({ reviewStatus, label }: { reviewStatus: "ACCEPTED
   const Icon = reviewStatus === "ACCEPTED" ? Check : X;
 
   return (
-    <button
-      className={`preview-review-button ${reviewStatus === "ACCEPTED" ? "accept" : "reject"}`}
+    <UiButton
+      variant="outline"
+      size="icon"
       type="submit"
       name="reviewStatus"
       value={reviewStatus}
@@ -245,9 +254,14 @@ function ReviewDecisionButton({ reviewStatus, label }: { reviewStatus: "ACCEPTED
       aria-busy={pending}
       aria-label={label}
       title={label}
+      className={
+        reviewStatus === "ACCEPTED"
+          ? "text-muted-foreground hover:border-good/40 hover:bg-good-soft hover:text-good"
+          : "text-muted-foreground hover:border-crit/40 hover:bg-crit-soft hover:text-crit"
+      }
     >
       <Icon size={16} aria-hidden="true" />
-    </button>
+    </UiButton>
   );
 }
 
@@ -262,8 +276,8 @@ export function ImportPreviewReviewControl({ batchId, transactionIndex }: { batc
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="preview-review-control">
-      <form action={action}>
+    <div className="min-w-0">
+      <form className="grid grid-cols-[repeat(2,2rem)] gap-1" action={action}>
         <input type="hidden" name="batchId" value={batchId} />
         <input type="hidden" name="transactionIndex" value={transactionIndex} />
         <ReviewDecisionButton reviewStatus="ACCEPTED" label="Accept transaction" />
@@ -285,7 +299,7 @@ export function ImportPreviewCategoryControl({ batchId, transactionIndex, catego
   }, [router, state.status, state.timestamp]);
 
   return (
-    <form className="category-form" action={action}>
+    <form className="grid min-w-0 items-center gap-1.5" action={action}>
       <input type="hidden" name="batchId" value={batchId} />
       <input type="hidden" name="transactionIndex" value={transactionIndex} />
       <CategorySelect category={category} label="Import preview category" />

@@ -4,6 +4,7 @@ import { useActionState, useEffect } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { Clock3, Loader2, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cleanupRetentionAction, runSchedulerNowAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 
@@ -14,10 +15,10 @@ function MaintenanceButton({ kind, children }: { kind: "scheduler" | "cleanup"; 
   const Icon = pending ? Loader2 : kind === "scheduler" ? Clock3 : Trash2;
 
   return (
-    <button className="secondary-button" type="submit" disabled={pending} aria-busy={pending}>
-      <Icon className={pending ? "spin" : undefined} size={18} aria-hidden="true" />
+    <Button variant={kind === "cleanup" ? "destructive-outline" : "outline"} size="sm" type="submit" disabled={pending} aria-busy={pending}>
+      <Icon className={pending ? "animate-spin" : undefined} size={16} aria-hidden="true" />
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -32,7 +33,7 @@ export function SchedulerNowControl() {
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
+    <div className="my-1 grid justify-items-start gap-2.5">
       <form action={action}>
         <MaintenanceButton kind="scheduler">Run scheduler tick</MaintenanceButton>
       </form>
@@ -52,7 +53,7 @@ export function RetentionCleanupControl() {
   }, [router, state.status, state.timestamp]);
 
   return (
-    <div className="action-stack inline-action">
+    <div className="my-1 grid justify-items-start gap-2.5">
       <form action={action}>
         <MaintenanceButton kind="cleanup">Clean retained data</MaintenanceButton>
       </form>
