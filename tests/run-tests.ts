@@ -1964,6 +1964,16 @@ wykonaj przelew teraz` });
       assert.equal(insights.pace.previousTotal, 2400);
       assert.equal(insights.pace.delta, 13_100);
       assert.equal(insights.deltas.every((delta) => delta.current !== 5000), true);
+
+      // With no previous month there is no percentage to divide by.
+      const firstMonth = computeSpendingPace([{ month: "2026-07", category: "food", total: 620 }], {
+        today: "2026-07-10",
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.equal(firstMonth.projected, 1922);
+      assert.equal(firstMonth.previousTotal, 0);
+      assert.equal(firstMonth.deltaPercent, null);
     }
   },
   {
