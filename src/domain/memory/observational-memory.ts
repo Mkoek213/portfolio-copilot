@@ -118,6 +118,70 @@ export async function writeImportObservation(
   return observation;
 }
 
+export const BUDGET_BREACH_TOPIC = "budget-breach";
+
+/**
+ * The per-category-per-month identity inside a breach observation's content.
+ * Written into the content and matched when deduping, so repeated analysis runs
+ * in the same month never spam memory with the same breach.
+ */
+export function budgetBreachMarker(category: string, month: string) {
+  return `${category} (${month})`;
+}
+
+/**
+ * Writes one `budget-breach` observation per category that is over its monthly
+ * budget, at analysis-run time (plan 20). Deduped per category per month, so a
+ * second run in the same month is a no-op. Follows the `writeImportObservation`
+ * pattern: the breach shows up in the Memory tab and is available to chat and
+ * future reports.
+ */
+export async function writeBudgetBreachObservations(
+  db: PrismaClient,
+  input: {
+    threadId: string;
+    resourceId: string;
+    month: string;
+    breaches: Array<{ category: string; spent: number; budget: number }>;
+    currency?: string;
+  }
+) {
+  if (input.breaches.length === 0) {
+    return { written: [] as string[], skipped: [] as string[] };
+  }
+
+  const existing = await db.observation.findMany({
+    where: { resourceId: input.resourceId, topic: BUDGET_BREACH_TOPIC, content: { contains: input.month } },
+    select: { content: true }
+  });
+
+  const currency = input.currency ?? "PLN";
+  const written: string[] = [];
+  const skipped: string[] = [];
+  const pending = input.breaches.filter((breach) => {
+    const marker = budgetBreachMarker(breach.category, input.month);
+    const duplicate = existing.some((observation) => observation.content.includes(marker));
+
+    (duplicate ? skipped : written).push(breach.category);
+    return !duplicate;
+  });
+
+  if (pending.length > 0) {
+    await db.observation.createMany({
+      data: pending.map((breach) => ({
+        threadId: input.threadId,
+        resourceId: input.resourceId,
+        priority: "MEDIUM" as const,
+        topic: BUDGET_BREACH_TOPIC,
+        content: `Budżet ${budgetBreachMarker(breach.category, input.month)} przekroczony: wydano ${breach.spent} ${currency} z ${breach.budget} ${currency}.`,
+        sourceLinks: { month: input.month, category: breach.category }
+      }))
+    });
+  }
+
+  return { written, skipped };
+}
+
 export async function writeChatObservation(
   db: PrismaClient,
   input: {
