@@ -50,6 +50,9 @@ export function CategoryBudgetsForm({ budgets }: { budgets: Array<{ category: st
       title="Category budgets"
       sub="Monthly PLN cap per category · blank means untracked"
       action={<Wallet size={18} aria-hidden="true" />}
+      // The budgets sit on their own row under the profile and suggestions, so
+      // the twelve inputs get the full width instead of a half-empty row.
+      className="col-span-2 max-[1160px]:col-span-1"
     >
       <form action={formAction} className="grid gap-4">
         <div className="grid grid-cols-4 gap-3 max-[900px]:grid-cols-3 max-[640px]:grid-cols-2">
