@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { param, type DashboardData, type SearchParams } from "../../dashboard-data";
 import { TransactionCategoryControl } from "../import-controls";
+import { LearnedCategoryBadge } from "../learned-category-badge";
 import { SectionCard } from "../ui";
 
 const filterSelectClass =
@@ -84,6 +85,7 @@ export function TransactionsTab({ data, params }: { data: DashboardData; params:
                   </TableCell>
                   <TableCell className="min-w-[180px] py-2.5 align-top">
                     <TransactionCategoryControl transactionId={transaction.id} category={transaction.category} />
+                    {transaction.categorySource === "learned" ? <LearnedCategoryBadge /> : null}
                   </TableCell>
                   <TableCell className="py-2.5 pr-5 text-right align-top">
                     <span className={cn("whitespace-nowrap font-[650]", isInflow && "text-good")}>

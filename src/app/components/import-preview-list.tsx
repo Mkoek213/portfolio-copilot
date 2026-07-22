@@ -10,10 +10,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { bulkUpdateImportPreviewReviewAction, type ActionResult } from "../actions";
 import { ActionStatus } from "./action-status";
 import { ImportPreviewCategoryControl, ImportPreviewReviewControl } from "./import-controls";
+import { LearnedCategoryBadge } from "./learned-category-badge";
 
 const initialState: ActionResult = { status: "idle", message: "" };
 
-export type PreviewItem = { transactionIndex: number; description: string; amount: number; currency: string; category: string };
+export type PreviewItem = { transactionIndex: number; description: string; amount: number; currency: string; category: string; categorySource: string };
 
 function BulkButton({ status, count, label }: { status: "ACCEPTED" | "REJECTED"; count: number; label: string }) {
   const { pending } = useFormStatus();
@@ -103,6 +104,7 @@ export function ImportPreviewList({
             />
             <div className="max-[640px]:col-span-full">
               <ImportPreviewCategoryControl batchId={batchId} transactionIndex={item.transactionIndex} category={item.category} />
+              {item.categorySource === "learned" ? <LearnedCategoryBadge /> : null}
             </div>
             <ImportPreviewReviewControl batchId={batchId} transactionIndex={item.transactionIndex} />
             <strong className="text-[0.84rem] font-medium [overflow-wrap:anywhere]">{item.description}</strong>
