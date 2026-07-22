@@ -1,4 +1,5 @@
 import type { DashboardData } from "../../dashboard-data";
+import { CategoryBudgetsForm } from "../category-budgets-form";
 import { StrategySettingsForm } from "../strategy-settings-form";
 import { StrategySuggestionControl } from "../strategy-suggestion-control";
 import { SectionCard, StatusChip, type ChipTone } from "../ui";
@@ -35,6 +36,7 @@ export function StrategyTab({ data }: { data: DashboardData }) {
           {data.suggestions.length === 0 ? <p className="text-[0.86rem] text-muted-foreground">No strategy suggestions yet.</p> : null}
         </div>
       </SectionCard>
+      <CategoryBudgetsForm budgets={data.categoryBudgets} />
     </section>
   );
 }
