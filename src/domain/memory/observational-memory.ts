@@ -158,13 +158,19 @@ export async function writeBudgetBreachObservations(
   const currency = input.currency ?? "PLN";
   const written: string[] = [];
   const skipped: string[] = [];
-  const pending = input.breaches.filter((breach) => {
-    const marker = budgetBreachMarker(breach.category, input.month);
-    const duplicate = existing.some((observation) => observation.content.includes(marker));
+  const pending: typeof input.breaches = [];
 
-    (duplicate ? skipped : written).push(breach.category);
-    return !duplicate;
-  });
+  for (const breach of input.breaches) {
+    const marker = budgetBreachMarker(breach.category, input.month);
+
+    if (existing.some((observation) => observation.content.includes(marker))) {
+      skipped.push(breach.category);
+      continue;
+    }
+
+    written.push(breach.category);
+    pending.push(breach);
+  }
 
   if (pending.length > 0) {
     await db.observation.createMany({
