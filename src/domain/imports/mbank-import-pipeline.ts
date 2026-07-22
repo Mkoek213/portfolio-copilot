@@ -13,6 +13,8 @@ import { categorizeTransactionsWithLlm, type CategorizableTransaction } from "./
 import { EXPENSE_CATEGORIES, isExpenseCategory } from "@/domain/portfolio/categories";
 import { recordTraceWarning, traceStep } from "@/domain/tracing/local-tracing";
 import { mbankSyncModeLabel } from "./mbank-sync-mode";
+import { categorySourceOrDefault, normalizeMerchantKey, ruleMapKey, type CategorySource } from "./category-rules";
+import type { TransactionDirection } from "@/domain/portfolio/types";
 
 const RESOURCE_ID = "local-user";
 
@@ -43,18 +45,99 @@ function toCategorizable(transaction: ParsedMbankTransaction): CategorizableTran
   };
 }
 
-async function applyCategories<T extends { transactions: ParsedMbankTransaction[] }>(parsed: T, categorize: CategorizeTransactions): Promise<T> {
+type RuleMatch = { category: string; ruleId: string };
+
+// Loads this resource's learned rules once into a Map keyed on
+// `matchKey|direction`, so the categorize step can look each row up in O(1).
+async function loadCategoryRuleMap(db: PrismaClient, resourceId: string): Promise<Map<string, RuleMatch>> {
+  const rules = await db.categoryRule.findMany({ where: { resourceId } });
+  const map = new Map<string, RuleMatch>();
+
+  for (const rule of rules) {
+    map.set(ruleMapKey(rule.matchKey, rule.direction), { category: rule.category, ruleId: rule.id });
+  }
+
+  return map;
+}
+
+/**
+ * Categorizes parsed transactions with the learned-rule pass in front of the
+ * LLM. A row whose normalized merchant plus direction matches a rule takes the
+ * rule's category (`categorySource = "learned"`), bumps the rule's hit count,
+ * and is excluded from the LLM batch. Remaining rows go to `categorize` exactly
+ * as before, so the "never fail an import" per-item fallback is preserved; a row
+ * the model moved off its deterministic seed is `"llm"`, an unanswered/fallback
+ * row stays `"deterministic"`. Applied on fresh imports and preview rebuilds.
+ */
+async function categorizeParsed<T extends { transactions: ParsedMbankTransaction[] }>(
+  db: PrismaClient,
+  parsed: T,
+  categorize: CategorizeTransactions
+): Promise<T> {
   if (parsed.transactions.length === 0) {
     return parsed;
   }
 
-  const categories = await categorize(parsed.transactions.map(toCategorizable));
-  const transactions = parsed.transactions.map((transaction, index) => ({
-    ...transaction,
-    category: categories[index] ?? transaction.category
-  }));
+  const ruleMap = await loadCategoryRuleMap(db, RESOURCE_ID);
+
+  const learnedCategoryByIndex = new Map<number, string>();
+  const ruleHitCounts = new Map<string, number>();
+  const llmIndexes: number[] = [];
+
+  parsed.transactions.forEach((transaction, index) => {
+    const key = normalizeMerchantKey(transaction.merchant);
+    const match = key ? ruleMap.get(ruleMapKey(key, transaction.direction)) : undefined;
+
+    if (match && isExpenseCategory(match.category)) {
+      learnedCategoryByIndex.set(index, match.category);
+      ruleHitCounts.set(match.ruleId, (ruleHitCounts.get(match.ruleId) ?? 0) + 1);
+    } else {
+      llmIndexes.push(index);
+    }
+  });
+
+  const llmCategories =
+    llmIndexes.length > 0 ? await categorize(llmIndexes.map((index) => toCategorizable(parsed.transactions[index]!))) : [];
+  const llmCategoryByIndex = new Map<number, string>();
+  llmIndexes.forEach((originalIndex, offset) => {
+    llmCategoryByIndex.set(originalIndex, llmCategories[offset] ?? parsed.transactions[originalIndex]!.category);
+  });
+
+  const transactions = parsed.transactions.map((transaction, index) => {
+    const learned = learnedCategoryByIndex.get(index);
+    if (learned) {
+      return { ...transaction, category: learned, categorySource: "learned" satisfies CategorySource as string };
+    }
+
+    const resolved = llmCategoryByIndex.get(index) ?? transaction.category;
+    const source: CategorySource = resolved === transaction.category ? "deterministic" : "llm";
+    return { ...transaction, category: resolved, categorySource: source as string };
+  });
+
+  // One update per matched rule; hit counts drive future auditing only.
+  for (const [ruleId, count] of ruleHitCounts) {
+    await db.categoryRule.update({ where: { id: ruleId }, data: { hitCount: { increment: count } } });
+  }
 
   return { ...parsed, transactions };
+}
+
+// Learns (creates or last-write-wins updates) a rule from a user correction.
+// A null/weak key means the correction is still saved, it just teaches nothing.
+async function learnCategoryRule(
+  db: PrismaClient | Prisma.TransactionClient,
+  input: { merchant: string | null; direction: TransactionDirection; category: string }
+): Promise<void> {
+  const matchKey = normalizeMerchantKey(input.merchant);
+  if (!matchKey || !isExpenseCategory(input.category)) {
+    return;
+  }
+
+  await db.categoryRule.upsert({
+    where: { resourceId_matchKey_direction: { resourceId: RESOURCE_ID, matchKey, direction: input.direction } },
+    create: { resourceId: RESOURCE_ID, matchKey, direction: input.direction, category: input.category },
+    update: { category: input.category }
+  });
 }
 
 export type MbankImportSyncResult = {
@@ -84,6 +167,7 @@ type StoredParsedTransaction = {
   description: string;
   merchant: string | null;
   category: string;
+  categorySource?: string;
   reviewStatus?: ImportPreviewReviewStatus;
   included?: boolean;
   accountLabel?: string | null;
@@ -116,6 +200,7 @@ function toStoredTransaction(transaction: ParsedMbankTransaction): StoredParsedT
     description: transaction.description,
     merchant: transaction.merchant,
     category: transaction.category,
+    categorySource: categorySourceOrDefault(transaction.categorySource),
     reviewStatus: "PENDING",
     accountLabel: transaction.accountLabel ?? null,
     balanceAfter: transaction.balanceAfter ?? null
@@ -140,6 +225,7 @@ function storedTransactions(value: Prisma.JsonValue | null | undefined): StoredP
 
   return transactions.map((transaction) => ({
     ...transaction,
+    categorySource: categorySourceOrDefault(transaction.categorySource),
     reviewStatus:
       transaction.reviewStatus === "ACCEPTED" || transaction.reviewStatus === "REJECTED" || transaction.reviewStatus === "PENDING"
         ? transaction.reviewStatus
@@ -385,7 +471,7 @@ async function processStatementMessage(
     parseMbankStatementPdf(pdf.data, password)
   );
   const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
-    applyCategories(parsed, categorize)
+    categorizeParsed(db, parsed, categorize)
   );
 
   return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
@@ -481,7 +567,7 @@ export async function syncMbankGmail(
             }
 
             const categorized = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "llm-categorizer", input: { id: message.id, count: parsed.transactions.length } }, () =>
-              applyCategories(parsed, categorize)
+              categorizeParsed(db, parsed, categorize)
             );
 
             return traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "import-preview", input: { id: message.id } }, () =>
@@ -596,7 +682,7 @@ export async function retryParseImportBatch(
       const categorized = await traceStep(
         db,
         { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.categorizer", input: { id: summary.id, count: parsed.transactions.length } },
-        () => applyCategories(parsed, categorize)
+        () => categorizeParsed(db, parsed, categorize)
       );
       const parsedTransactions = categorized.transactions.map(toStoredTransaction);
 
@@ -640,7 +726,14 @@ export async function retryParseImportBatch(
     const parsed = await traceStep(db, { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.parser", input: { id: summary.id } }, () =>
       parseMbankEmail(fullMessage.bodyText)
     );
-    const parsedTransactions = parsed.transactions.map(toStoredTransaction);
+    // Rebuilding a pending email preview categorizes like a fresh import, so
+    // learned rules apply and the preview shows the "learned" flag on retry too.
+    const categorized = await traceStep(
+      db,
+      { traceId, resourceId: RESOURCE_ID, name: "gmail-retry.categorizer", input: { id: summary.id, count: parsed.transactions.length } },
+      () => categorizeParsed(db, parsed, categorize)
+    );
+    const parsedTransactions = categorized.transactions.map(toStoredTransaction);
     const duplicate = await findExactBatch(db, fullMessage.id, parsed.operationDate, batch.id);
 
     if (duplicate) {
@@ -746,8 +839,9 @@ export async function updateImportPreviewTransactionCategory(
       throw new Error("Import preview transaction not found.");
     }
 
+    // An explicit correction is provenance "user" and overrides any learned flag.
     const parsedTransactions = parsed.map((item, index) =>
-      index === transactionIndex ? { ...item, category: nextCategory } : item
+      index === transactionIndex ? { ...item, category: nextCategory, categorySource: "user" satisfies CategorySource as string } : item
     );
     const updatedBatch = await tx.importBatch.update({
       where: { id: batch.id },
@@ -760,10 +854,14 @@ export async function updateImportPreviewTransactionCategory(
 
       for (const linked of linkedTransactions) {
         if (acceptedRow && transactionIdentity(linked) === transactionIdentity(acceptedRow)) {
-          await tx.bankTransaction.update({ where: { id: linked.id }, data: { category: nextCategory } });
+          await tx.bankTransaction.update({ where: { id: linked.id }, data: { category: nextCategory, categorySource: "user" } });
         }
       }
     }
+
+    // Teach a rule from this correction (skips null/weak keys). Same tx as the
+    // write above, so a learned rule and its trigger commit together.
+    await learnCategoryRule(tx, { merchant: transaction.merchant, direction: transaction.direction, category: nextCategory });
 
     return updatedBatch;
   });
@@ -827,10 +925,16 @@ export async function updateBankTransactionCategory(
 ): Promise<BankTransaction> {
   const nextCategory = assertSupportedCategory(category);
 
-  return db.bankTransaction.update({
+  // The update returns the row, so `merchant` + `direction` are read back for the
+  // rule key without a second query. An explicit correction is provenance "user".
+  const updated = await db.bankTransaction.update({
     where: { id: transactionId },
-    data: { category: nextCategory }
+    data: { category: nextCategory, categorySource: "user" }
   });
+
+  await learnCategoryRule(db, { merchant: updated.merchant, direction: updated.direction, category: nextCategory });
+
+  return updated;
 }
 
 function transactionRows(batch: ImportBatch, parsed: StoredParsedTransaction[]) {
@@ -850,6 +954,7 @@ function transactionRows(batch: ImportBatch, parsed: StoredParsedTransaction[]) 
       description: transaction.description,
       merchant: transaction.merchant,
       category: transaction.category,
+      categorySource: categorySourceOrDefault(transaction.categorySource),
       accountLabel: transaction.accountLabel ?? null,
       balanceAfter: transaction.balanceAfter ?? null
     }));

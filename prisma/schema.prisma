@@ -256,6 +256,7 @@ model BankTransaction {
   description   String
   merchant      String?
   category      String
+  categorySource String                 @default("deterministic")
   accountLabel  String?
   balanceAfter  Decimal?                @db.Decimal(24, 2)
   createdAt     DateTime                @default(now())
@@ -266,6 +267,24 @@ model BankTransaction {
   @@index([category])
   @@index([direction])
   @@index([merchant])
+}
+
+// A per-user rule learned from category corrections: the normalized merchant
+// plus direction maps to a category, auto-applied (flagged "learned") to future
+// matching imports. Last-write-wins on `category`; created/updated on every
+// correction that yields a clean key. See plan 19.
+model CategoryRule {
+  id         String               @id @default(cuid())
+  resourceId String
+  matchKey   String
+  direction  TransactionDirection
+  category   String
+  hitCount   Int                  @default(0)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  @@unique([resourceId, matchKey, direction])
+  @@index([resourceId])
 }
 
 model AgentRun {

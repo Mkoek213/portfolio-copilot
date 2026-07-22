@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { normalizeMerchantKey } from "../../src/domain/imports/category-rules";
+import { prisma, E2E_RESOURCE_ID } from "./db";
 
 /**
  * Plan-14 Transactions: the two must-not-regress behaviors.
@@ -37,4 +39,73 @@ test("CategorySelect updates in place and persists across reload", async ({ page
   await expect(page.locator('select[aria-label="Transaction category"]').first()).toHaveValue(original);
 
   expect(errors, errors.join("\n")).toHaveLength(0);
+});
+
+/**
+ * Plan-19 learned categorization: a row auto-categorized from a learned rule
+ * shows the "nauczone" marker; overriding its category clears the marker (source
+ * flips to "user") AND last-write-wins updates the rule. Seeds/cleans its own
+ * data via Prisma so it never depends on the local dataset.
+ */
+const LEARNED_MARKER = '[aria-label="Kategoria nauczona z Twoich wcześniejszych poprawek"]';
+
+test("learned category shows a marker, overriding clears it and updates the rule", async ({ page }) => {
+  const suffix = Math.random().toString(36).replace(/[^a-z]/g, "").slice(0, 8) || "abcd";
+  const merchant = `E2E LEARNED SHOP ${suffix}`;
+  const matchKey = normalizeMerchantKey(merchant);
+  expect(matchKey, "seed merchant must produce a clean rule key").not.toBeNull();
+
+  const batch = await prisma.importBatch.create({
+    data: { provider: "MBANK_EMAIL", source: "GMAIL_MCP", gmailMessageId: `e2e-learned-${suffix}`, status: "IMPORTED", transactionCount: 1 }
+  });
+  const transaction = await prisma.bankTransaction.create({
+    data: {
+      importBatchId: batch.id,
+      // An old date keeps this row out of the unfiltered "first row" the sibling
+      // CategorySelect test grabs; the merchant filter still surfaces it here.
+      operationDate: new Date("2000-01-02T00:00:00.000Z"),
+      amount: "42.00",
+      currency: "PLN",
+      direction: "OUTFLOW",
+      description: `ZAKUP PRZY UŻYCIU KARTY; ${merchant}`,
+      merchant,
+      category: "food",
+      categorySource: "learned"
+    }
+  });
+  const rule = await prisma.categoryRule.create({
+    data: { resourceId: E2E_RESOURCE_ID, matchKey: matchKey!, direction: "OUTFLOW", category: "food" }
+  });
+
+  try {
+    await page.goto(`/?tab=transactions&merchant=${encodeURIComponent(merchant)}`, { waitUntil: "networkidle" });
+
+    const select = page.locator('select[aria-label="Transaction category"]').first();
+    await expect(select).toHaveValue("food");
+    await expect(page.locator(LEARNED_MARKER)).toBeVisible();
+
+    // Override the learned category.
+    await select.selectOption("shopping");
+    await expect(page.locator('select[aria-label="Transaction category"]').first()).toHaveValue("shopping");
+
+    // A full reload reflects the persisted state: value sticks, marker is gone.
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.locator('select[aria-label="Transaction category"]').first()).toHaveValue("shopping");
+    await expect(page.locator(LEARNED_MARKER)).toHaveCount(0);
+
+    // The correction flipped provenance to "user" and last-write-wins the rule.
+    const updatedTransaction = await prisma.bankTransaction.findUnique({ where: { id: transaction.id } });
+    expect(updatedTransaction?.category).toBe("shopping");
+    expect(updatedTransaction?.categorySource).toBe("user");
+
+    const updatedRule = await prisma.categoryRule.findUnique({
+      where: { resourceId_matchKey_direction: { resourceId: E2E_RESOURCE_ID, matchKey: matchKey!, direction: "OUTFLOW" } }
+    });
+    expect(updatedRule?.category).toBe("shopping");
+  } finally {
+    await prisma.bankTransaction.deleteMany({ where: { importBatchId: batch.id } });
+    await prisma.categoryRule.deleteMany({ where: { id: rule.id } });
+    await prisma.importBatch.delete({ where: { id: batch.id } });
+    await prisma.$disconnect();
+  }
 });

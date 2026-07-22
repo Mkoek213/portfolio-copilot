@@ -26,6 +26,7 @@ import { confirmImportBatch, createImportDedupeKey, deleteAllResolvedImportBatch
 import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/imports/mbank-parser";
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
+import { normalizeMerchantKey, ruleMapKey } from "../src/domain/imports/category-rules";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -245,8 +246,20 @@ type FakeBankTransaction = {
   description: string;
   merchant: string | null;
   category: string;
+  categorySource: string;
   accountLabel: string | null;
   balanceAfter: number | null;
+};
+
+type FakeCategoryRule = {
+  id: string;
+  resourceId: string;
+  matchKey: string;
+  direction: string;
+  category: string;
+  hitCount: number;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 type FakeDateRange = { gte?: Date; lte?: Date };
@@ -288,6 +301,15 @@ type FakeDb = {
     count(args: { where?: FakeTransactionWhere }): Promise<number>;
     update(args: { where: { id: string }; data: Partial<FakeBankTransaction> }): Promise<FakeBankTransaction>;
   };
+  categoryRule: {
+    findMany(args: { where?: { resourceId?: string } }): Promise<FakeCategoryRule[]>;
+    upsert(args: {
+      where: { resourceId_matchKey_direction: { resourceId: string; matchKey: string; direction: string } };
+      create: { resourceId: string; matchKey: string; direction: string; category: string };
+      update: { category: string };
+    }): Promise<FakeCategoryRule>;
+    update(args: { where: { id: string }; data: { category?: string; hitCount?: number | { increment: number } } }): Promise<FakeCategoryRule>;
+  };
   $transaction<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T>;
 };
 
@@ -306,9 +328,11 @@ function sameDate(a: Date | null, b: Date | null | undefined) {
 function createImportHarness() {
   const batches: FakeImportBatch[] = [];
   const transactions: FakeBankTransaction[] = [];
+  const rules: FakeCategoryRule[] = [];
   const spans = new Map<string, Record<string, unknown>>();
   let batchSeq = 0;
   let transactionSeq = 0;
+  let ruleSeq = 0;
   let spanSeq = 0;
 
   function notNullMatches(value: Date | null, condition: Date | null | { not: null } | undefined) {
@@ -455,6 +479,7 @@ function createImportHarness() {
           description: String(item.description),
           merchant: item.merchant == null ? null : String(item.merchant),
           category: String(item.category ?? "other"),
+          categorySource: String(item.categorySource ?? "deterministic"),
           accountLabel: item.accountLabel == null ? null : String(item.accountLabel),
           balanceAfter: item.balanceAfter == null ? null : Number(item.balanceAfter)
         });
@@ -485,11 +510,45 @@ function createImportHarness() {
       return transaction;
     }
   };
+  db.categoryRule = {
+    async findMany({ where }) {
+      return rules.filter((rule) => where?.resourceId === undefined || rule.resourceId === where.resourceId);
+    },
+    async upsert({ where, create, update }) {
+      const { resourceId, matchKey, direction } = where.resourceId_matchKey_direction;
+      const existing = rules.find((rule) => rule.resourceId === resourceId && rule.matchKey === matchKey && rule.direction === direction);
+
+      if (existing) {
+        Object.assign(existing, update, { updatedAt: new Date("2026-07-04T10:05:00.000Z") });
+        return existing;
+      }
+
+      const now = new Date("2026-07-04T10:00:00.000Z");
+      const rule: FakeCategoryRule = { id: `rule-${++ruleSeq}`, hitCount: 0, createdAt: now, updatedAt: now, ...create };
+      rules.push(rule);
+      return rule;
+    },
+    async update({ where, data }) {
+      const rule = rules.find((item) => item.id === where.id);
+      if (!rule) {
+        throw new Error(`Missing fake rule ${where.id}`);
+      }
+
+      if (data.category !== undefined) {
+        rule.category = data.category;
+      }
+      if (data.hitCount !== undefined) {
+        rule.hitCount = typeof data.hitCount === "number" ? data.hitCount : rule.hitCount + data.hitCount.increment;
+      }
+      rule.updatedAt = new Date("2026-07-04T10:05:00.000Z");
+      return rule;
+    }
+  };
   db.$transaction = async function transaction<T>(fn: (tx: PrismaClient) => Promise<T>) {
     return fn(db as unknown as PrismaClient);
   };
 
-  return { db: db as unknown as PrismaClient, state: { batches, transactions, spans } };
+  return { db: db as unknown as PrismaClient, state: { batches, transactions, rules, spans } };
 }
 
 function mcpMockServer(calls: string[]) {
@@ -1314,6 +1373,157 @@ Numer referencyjny maila: X.
     }
   },
   {
+    name: "normalizeMerchantKey keys clean merchants and rejects weak or ledger-like input",
+    async run() {
+      assert.equal(normalizeMerchantKey("JAN KOWALSKI"), "jan kowalski");
+      assert.equal(normalizeMerchantKey("  ZABKA   Z123  KRAKOW PL "), "zabka z123 krakow pl");
+      // Person name with trailing punctuation still keys cleanly.
+      assert.equal(normalizeMerchantKey("DOMINIKA ."), "dominika");
+      assert.equal(normalizeMerchantKey(null), null);
+      assert.equal(normalizeMerchantKey(""), null);
+      // Too short after stripping.
+      assert.equal(normalizeMerchantKey("A"), null);
+      assert.equal(normalizeMerchantKey("."), null);
+      // Digit-heavy / IBAN-like ledger noise is never a stable merchant.
+      assert.equal(normalizeMerchantKey("12345678"), null);
+      assert.equal(normalizeMerchantKey("PL61109010140000071219812874"), null);
+      assert.equal(ruleMapKey("jan kowalski", "OUTFLOW"), "jan kowalski|OUTFLOW");
+    }
+  },
+  {
+    name: "learned rule overrides the LLM, flags the row, excludes it from the categorize batch, and bumps hitCount",
+    async run() {
+      const { db, state } = createImportHarness();
+      const summary: GmailMessageSummary = {
+        id: "msg-learned-1",
+        threadId: "thread-learned",
+        subject: "mBank - operacja",
+        sender: "mBank",
+        receivedAt: new Date("2026-07-02T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const adapter = {
+        searchMbankMessages: async () => [summary],
+        readGmailMessage: async () => ({ ...summary, bodyText: mbankFixture() })
+      };
+
+      // Seed a rule for the fixture's only transaction (BIEDRONKA ..., OUTFLOW).
+      await db.categoryRule.upsert({
+        where: { resourceId_matchKey_direction: { resourceId: "local-user", matchKey: "biedronka anon store 0000", direction: "OUTFLOW" } },
+        create: { resourceId: "local-user", matchKey: "biedronka anon store 0000", direction: "OUTFLOW", category: "shopping" },
+        update: { category: "shopping" }
+      });
+
+      const seenByCategorize: Array<{ merchant: string | null }> = [];
+      const categorize = async (txs: Array<{ description: string; merchant: string | null; direction: "INFLOW" | "OUTFLOW" }>) => {
+        seenByCategorize.push(...txs);
+        return txs.map(() => "health" as const);
+      };
+
+      await syncMbankGmail(db, { adapter, traceId: "learned-sync", categorize });
+
+      const stored = state.batches[0]?.parsedTransactions as Array<{ category: string; categorySource: string }>;
+      assert.equal(stored[0]?.category, "shopping");
+      assert.equal(stored[0]?.categorySource, "learned");
+      // The matched row never reached the LLM batch.
+      assert.equal(seenByCategorize.length, 0);
+      // The rule recorded the hit.
+      assert.equal(state.rules[0]?.hitCount, 1);
+    }
+  },
+  {
+    name: "without a matching rule the LLM answer is provenance llm, and an unanswered row falls back to the deterministic seed",
+    async run() {
+      const summary: GmailMessageSummary = {
+        id: "msg-llm-1",
+        threadId: "thread-llm",
+        subject: "mBank - operacja",
+        sender: "mBank",
+        receivedAt: new Date("2026-07-02T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const adapter = {
+        searchMbankMessages: async () => [summary],
+        readGmailMessage: async () => ({ ...summary, bodyText: mbankFixture() })
+      };
+
+      // The model moves the row off its "food" seed -> provenance "llm".
+      const answered = createImportHarness();
+      await syncMbankGmail(answered.db, { adapter, traceId: "llm-answered", categorize: async (txs) => txs.map(() => "shopping" as const) });
+      const answeredStored = answered.state.batches[0]?.parsedTransactions as Array<{ category: string; categorySource: string }>;
+      assert.equal(answeredStored[0]?.category, "shopping");
+      assert.equal(answeredStored[0]?.categorySource, "llm");
+
+      // The model omits the row -> keep the deterministic seed and its provenance.
+      const fallback = createImportHarness();
+      await syncMbankGmail(fallback.db, { adapter, traceId: "llm-fallback", categorize: async () => [] });
+      const fallbackStored = fallback.state.batches[0]?.parsedTransactions as Array<{ category: string; categorySource: string }>;
+      assert.equal(fallbackStored[0]?.category, "food");
+      assert.equal(fallbackStored[0]?.categorySource, "deterministic");
+    }
+  },
+  {
+    name: "correcting a bank transaction category learns a rule (create then last-write-wins), and a weak key learns nothing",
+    async run() {
+      const { db, state } = createImportHarness();
+      const batch = await db.importBatch.create({ data: { gmailMessageId: "msg-learn-tx", status: "IMPORTED", transactionCount: 2 } });
+      await db.bankTransaction.createMany({
+        data: [
+          { importBatchId: batch.id, operationDate: new Date("2026-07-01T00:00:00.000Z"), amount: 40, direction: "OUTFLOW", description: "przelew wychodzacy", merchant: "DOMINIKA .", category: "other" },
+          { importBatchId: batch.id, operationDate: new Date("2026-07-02T00:00:00.000Z"), amount: 15, direction: "OUTFLOW", description: "blik", merchant: "12345678", category: "other" }
+        ]
+      });
+      const [personTx, weakTx] = state.transactions;
+
+      // First correction creates the rule and marks the row as user provenance.
+      const firstUpdate = await updateBankTransactionCategory(db, personTx!.id, "people_transfers");
+      assert.equal(firstUpdate.categorySource, "user");
+      assert.equal(state.rules.length, 1);
+      assert.equal(state.rules[0]?.matchKey, "dominika");
+      assert.equal(state.rules[0]?.direction, "OUTFLOW");
+      assert.equal(state.rules[0]?.category, "people_transfers");
+
+      // Second correction updates the same rule (last-write-wins), still one rule.
+      await updateBankTransactionCategory(db, personTx!.id, "shopping");
+      assert.equal(state.rules.length, 1);
+      assert.equal(state.rules[0]?.category, "shopping");
+
+      // A digit-run merchant is too weak to key, so the category saves but no rule is learned.
+      const weakUpdate = await updateBankTransactionCategory(db, weakTx!.id, "food");
+      assert.equal(weakUpdate.category, "food");
+      assert.equal(weakUpdate.categorySource, "user");
+      assert.equal(state.rules.length, 1);
+    }
+  },
+  {
+    name: "correcting an import preview category learns a rule and flips the item to user provenance",
+    async run() {
+      const { db, state } = createImportHarness();
+      const summary: GmailMessageSummary = {
+        id: "msg-preview-learn",
+        threadId: "thread-preview-learn",
+        subject: "mBank - operacja",
+        sender: "mBank",
+        receivedAt: new Date("2026-07-02T08:00:00.000Z"),
+        snippet: "mBank"
+      };
+      const adapter = {
+        searchMbankMessages: async () => [summary],
+        readGmailMessage: async () => ({ ...summary, bodyText: mbankFixture() })
+      };
+
+      await syncMbankGmail(db, { adapter, traceId: "preview-learn", categorize: deterministicCategorize });
+
+      const updated = await updateImportPreviewTransactionCategory(db, String(state.batches[0]?.id), 0, "shopping");
+      const item = (updated.parsedTransactions as Array<{ category: string; categorySource: string }>)[0];
+      assert.equal(item?.category, "shopping");
+      assert.equal(item?.categorySource, "user");
+      assert.equal(state.rules.length, 1);
+      assert.equal(state.rules[0]?.matchKey, "biedronka anon store 0000");
+      assert.equal(state.rules[0]?.category, "shopping");
+    }
+  },
+  {
     name: "accepted statement transactions import immediately and supersede daily notifications",
     async run() {
       const { db, state } = createImportHarness();
@@ -1474,7 +1684,9 @@ Numer referencyjny maila: X.
         adapter: {
           readGmailMessage: async () => ({ ...summary, subject: "mBank - fixed", bodyText: mbankFixture() })
         },
-        traceId: "retry-parse"
+        traceId: "retry-parse",
+        // Retrying an email preview now categorizes like a fresh import; keep the suite offline.
+        categorize: deterministicCategorize
       });
 
       assert.equal(retry.status, "pending_review");

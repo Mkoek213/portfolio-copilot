@@ -113,7 +113,8 @@ export function ImportsTab({ data, gmailState }: { data: DashboardData; gmailSta
                       description: String(item.description),
                       amount: Number(item.amount),
                       currency: String(item.currency ?? "PLN"),
-                      category: String(item.category)
+                      category: String(item.category),
+                      categorySource: String(item.categorySource ?? "deterministic")
                     }))}
                     acceptedCount={acceptedCount}
                     rejectedCount={rejectedCount}

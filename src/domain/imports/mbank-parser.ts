@@ -11,6 +11,9 @@ export type ParsedMbankTransaction = {
   description: string;
   merchant: string | null;
   category: ExpenseCategory;
+  // Provenance of `category`, assigned during the pipeline's categorize step
+  // (the parser only seeds the deterministic keyword category). See category-rules.ts.
+  categorySource?: string;
   accountLabel?: string | null;
   balanceAfter?: number | null;
 };
