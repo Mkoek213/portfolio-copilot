@@ -95,6 +95,36 @@ function buildTransactionCategoryFacts(context: PortfolioContext) {
     .join(", ") || "none";
 }
 
+// The plan-20 insights are already computed and rounded in the domain; the
+// reporter only hands them to the model as facts to narrate.
+function formatCategoryDeltas(context: PortfolioContext) {
+  return (
+    context.spendingInsights.deltas
+      .slice(0, 4)
+      .map((delta) => `${delta.category} ${delta.previous}->${delta.current} (${delta.deltaPercent === null ? "new" : `${delta.deltaPercent}%`})`)
+      .join(", ") || "none"
+  );
+}
+
+function formatAnomalies(context: PortfolioContext) {
+  if (context.spendingInsights.anomaliesStarved) {
+    return "not enough history to evaluate";
+  }
+
+  return (
+    context.spendingInsights.anomalies
+      .slice(0, 4)
+      .map((anomaly) => `${anomaly.date} ${preview(anomaly.merchant ?? anomaly.category, 30)} ${anomaly.amount} [${anomaly.rules.join("|")}]`)
+      .join(", ") || "none"
+  );
+}
+
+function formatBudgets(context: PortfolioContext) {
+  return (
+    context.spendingInsights.budgets.map((budget) => `${budget.category} ${budget.spent}/${budget.budget} ${budget.status}`).join(", ") || "none set"
+  );
+}
+
 function buildReporterFacts(
   context: PortfolioContext,
   analysis: Omit<AnalysisResult, "riskFlags">,
@@ -106,6 +136,10 @@ function buildReporterFacts(
     `asOf=${context.asOf.toISOString().slice(0, 10)}; currency=${context.baseCurrency}; totalValue=${context.totalValue}`,
     `profile=${context.strategy.lifeStage}; risk=${context.strategy.riskTolerance}; horizonYears=${context.strategy.investmentHorizonYears}`,
     `spending ${context.spendingSummary.currentMonth}: inflow=${context.spendingSummary.monthlyInflow}; outflow=${context.spendingSummary.monthlyOutflow}; net=${context.spendingSummary.netCashflow}; top=${formatAllocation(context.spendingSummary.topCategories)}`,
+    `categoryDeltas ${context.spendingInsights.months.lastCompleted} vs ${context.spendingInsights.months.priorCompleted}=${formatCategoryDeltas(context)}`,
+    `pace ${context.spendingInsights.pace.month}: projected=${context.spendingInsights.pace.projected}; previous=${context.spendingInsights.pace.previousTotal}; days=${context.spendingInsights.pace.dayOfMonth}/${context.spendingInsights.pace.daysInMonth} (projection, not a closed month)`,
+    `anomalies=${formatAnomalies(context)}`,
+    `budgets=${formatBudgets(context)}`,
     `allocationByClass=${formatAllocation(context.allocationByClass)}; allocationByCurrency=${formatAllocation(context.allocationByCurrency)}`,
     `transactions=${context.transactions.length}; outflowCategories=${buildTransactionCategoryFacts(context)}`,
     `contextLimits=transactions ${limits.recentTransactions.included}/${limits.recentTransactions.total} omitted ${limits.recentTransactions.omitted}; imports ${limits.imports.included}/${limits.imports.total} omitted ${limits.imports.omitted}; reports ${limits.reports.included}/${limits.reports.total} omitted ${limits.reports.omitted}`,

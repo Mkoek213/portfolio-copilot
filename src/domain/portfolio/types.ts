@@ -1,3 +1,5 @@
+import type { SpendingInsights } from "./spending-insights";
+
 export type AssetClass =
   | "CASH"
   | "ETF_STOCK"
@@ -110,6 +112,9 @@ export type PortfolioContext = {
   positions: PositionSnapshot[];
   transactions: TransactionSnapshot[];
   spendingSummary: SpendingSummary;
+  // Deterministic month-over-month deltas, pace, anomaly flags and budget status
+  // (plan 20). Computed in the domain, only narrated by the reporter.
+  spendingInsights: SpendingInsights;
   imports: ImportBatchSummary[];
   reports: ReportSummary[];
   memory: MemorySummary;

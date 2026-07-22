@@ -34,6 +34,27 @@ export function buildReportDraft(context: PortfolioContext, analysis: Omit<Analy
     (category) => `- ${category.label}: ${category.value.toLocaleString("pl-PL")} ${context.baseCurrency} (${category.percent}%)`,
     "- Brak wydatków z bieżącego miesiąca."
   );
+  const insights = context.spendingInsights;
+  const deltaLines = lines(
+    insights.deltas,
+    (delta) =>
+      `- ${delta.category}: ${delta.current.toLocaleString("pl-PL")} vs ${delta.previous.toLocaleString("pl-PL")} ${context.baseCurrency} (${delta.delta > 0 ? "+" : ""}${delta.delta.toLocaleString("pl-PL")}${delta.deltaPercent === null ? ", nowe" : `, ${delta.deltaPercent}%`})`,
+    "- Brak porównania zamkniętych miesięcy."
+  );
+  const anomalyLines = insights.anomaliesStarved
+    ? "- Za mało danych, aby wykryć anomalie."
+    : lines(
+        insights.anomalies,
+        (anomaly) =>
+          `- ${anomaly.date} ${anomaly.merchant ?? anomaly.category}: ${anomaly.amount.toLocaleString("pl-PL")} ${context.baseCurrency} (${anomaly.rules.join(", ")})`,
+        "- Brak nietypowych transakcji w bieżącym i ostatnim zamkniętym miesiącu."
+      );
+  const budgetLines = lines(
+    insights.budgets,
+    (budget) =>
+      `- ${budget.category}: ${budget.spent.toLocaleString("pl-PL")} / ${budget.budget.toLocaleString("pl-PL")} ${context.baseCurrency} (${budget.status})`,
+    "- Brak ustawionych budżetów kategorii."
+  );
   const memoryLines = lines(
     context.memory.reflections.slice(0, 3),
     (reflection) => `- ${reflection.summary}`,
@@ -67,6 +88,17 @@ export function buildReportDraft(context: PortfolioContext, analysis: Omit<Analy
       "## Spending",
       `Bieżący miesiąc: wpływy ${context.spendingSummary.monthlyInflow.toLocaleString("pl-PL")} ${context.baseCurrency}, wydatki ${context.spendingSummary.monthlyOutflow.toLocaleString("pl-PL")} ${context.baseCurrency}, cashflow ${context.spendingSummary.netCashflow.toLocaleString("pl-PL")} ${context.baseCurrency}.`,
       topCategories,
+      "",
+      `Zmiany kategorii ${context.spendingInsights.months.lastCompleted} vs ${context.spendingInsights.months.priorCompleted}:`,
+      deltaLines,
+      "",
+      `Prognozowane tempo ${context.spendingInsights.pace.month}: ${context.spendingInsights.pace.projected.toLocaleString("pl-PL")} ${context.baseCurrency} wobec ${context.spendingInsights.pace.previousTotal.toLocaleString("pl-PL")} ${context.baseCurrency} w ${context.spendingInsights.pace.previousMonth} (projekcja z ${context.spendingInsights.pace.dayOfMonth}/${context.spendingInsights.pace.daysInMonth} dni).`,
+      "",
+      "Nietypowe transakcje:",
+      anomalyLines,
+      "",
+      "Budżety kategorii:",
+      budgetLines,
       "",
       "## Risk flags",
       riskLines,

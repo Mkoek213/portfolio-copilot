@@ -9,6 +9,8 @@ function intEnv(name: string, fallback: number) {
 
 const REFLECTION_OBSERVATION_THRESHOLD = Math.max(4, Math.floor(intEnv("MEMORY_REFLECTION_TOKEN_THRESHOLD", 40_000) / 5_000));
 
+export const BUDGET_BREACH_TOPIC = "budget-breach";
+
 export async function writeObservationMemory(
   db: PrismaClient,
   input: {
@@ -67,7 +69,10 @@ export async function writeObservationMemory(
       content: item
     })),
     ...input.riskFlags
-      .filter((flag) => flag.level !== "info")
+      // Budget breaches are written by writeBudgetBreachObservations, which
+      // dedupes per category per month; letting them through here as well would
+      // add an undeduped copy on every run.
+      .filter((flag) => flag.level !== "info" && flag.topic !== BUDGET_BREACH_TOPIC)
       .map((flag) => ({
         priority: "HIGH" as const,
         topic: flag.topic,
@@ -116,6 +121,74 @@ export async function writeImportObservation(
 
   await reflectIfNeeded(db, "imports", input.resourceId);
   return observation;
+}
+
+/**
+ * The per-category-per-month identity inside a breach observation's content.
+ * Written into the content and matched when deduping, so repeated analysis runs
+ * in the same month never spam memory with the same breach.
+ */
+export function budgetBreachMarker(category: string, month: string) {
+  return `${category} (${month})`;
+}
+
+/**
+ * Writes one `budget-breach` observation per category that is over its monthly
+ * budget, at analysis-run time (plan 20). Deduped per category per month, so a
+ * second run in the same month is a no-op. Follows the `writeImportObservation`
+ * pattern: the breach shows up in the Memory tab and is available to chat and
+ * future reports.
+ */
+export async function writeBudgetBreachObservations(
+  db: PrismaClient,
+  input: {
+    threadId: string;
+    resourceId: string;
+    month: string;
+    breaches: Array<{ category: string; spent: number; budget: number }>;
+    currency?: string;
+  }
+) {
+  if (input.breaches.length === 0) {
+    return { written: [] as string[], skipped: [] as string[] };
+  }
+
+  const existing = await db.observation.findMany({
+    where: { resourceId: input.resourceId, topic: BUDGET_BREACH_TOPIC, content: { contains: input.month } },
+    select: { content: true }
+  });
+
+  const currency = input.currency ?? "PLN";
+  const written: string[] = [];
+  const skipped: string[] = [];
+  const pending: typeof input.breaches = [];
+
+  for (const breach of input.breaches) {
+    const marker = budgetBreachMarker(breach.category, input.month);
+
+    if (existing.some((observation) => observation.content.includes(marker))) {
+      skipped.push(breach.category);
+      continue;
+    }
+
+    written.push(breach.category);
+    pending.push(breach);
+  }
+
+  if (pending.length > 0) {
+    await db.observation.createMany({
+      data: pending.map((breach) => ({
+        threadId: input.threadId,
+        resourceId: input.resourceId,
+        priority: "MEDIUM" as const,
+        topic: BUDGET_BREACH_TOPIC,
+        content: `Budżet ${budgetBreachMarker(breach.category, input.month)} przekroczony: wydano ${breach.spent} ${currency} z ${breach.budget} ${currency}.`,
+        sourceLinks: { month: input.month, category: breach.category }
+      }))
+    });
+  }
+
+  return { written, skipped };
 }
 
 export async function writeChatObservation(

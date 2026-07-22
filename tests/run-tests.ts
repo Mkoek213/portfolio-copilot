@@ -27,6 +27,17 @@ import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/impor
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
 import { normalizeMerchantKey, ruleMapKey } from "../src/domain/imports/category-rules";
+import {
+  buildSpendingInsights,
+  computeBudgetStatuses,
+  computeCategoryDeltas,
+  computeSpendingPace,
+  detectSpendingAnomalies,
+  emptySpendingInsights,
+  type InsightMonthlyTotal,
+  type InsightTransaction
+} from "../src/domain/portfolio/spending-insights";
+import { BUDGET_BREACH_TOPIC, budgetBreachMarker, writeBudgetBreachObservations, writeObservationMemory } from "../src/domain/memory/observational-memory";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -102,6 +113,7 @@ const sampleContext: PortfolioContext = {
     topCategories: [{ key: "food", label: "food", value: 42.5, percent: 100 }],
     recentTransactionCount: 2
   },
+  spendingInsights: emptySpendingInsights("2026-07-03"),
   imports: [
     {
       id: "batch-1",
@@ -596,6 +608,40 @@ function mcpMockServer(calls: string[]) {
       res.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : "mock error" } }));
     }
   });
+}
+
+// Plan-20 spending-insight fixtures. July is the in-progress month, so June and
+// May are the two completed months every delta assertion works against.
+const insightMonthlyTotals: InsightMonthlyTotal[] = [
+  { month: "2026-07", category: "food", total: 5000 },
+  { month: "2026-06", category: "food", total: 1200 },
+  { month: "2026-06", category: "transport", total: 300 },
+  { month: "2026-06", category: "shopping", total: 900 },
+  { month: "2026-05", category: "food", total: 1000 },
+  { month: "2026-05", category: "transport", total: 500 }
+];
+
+function insightTransaction(
+  id: string,
+  date: string,
+  amount: number,
+  category: string,
+  merchant: string | null = null
+): InsightTransaction {
+  return { id, date, amount, category, merchant, merchantKey: normalizeMerchantKey(merchant) };
+}
+
+// A trailing sample set for one category: the same amount ±2, so the median is
+// stable and the MAD is non-zero (the robust-statistics path, not the fallback).
+function flatSamples(category: string, month: string, count: number, amount: number): InsightTransaction[] {
+  return Array.from({ length: count }, (_, index) =>
+    insightTransaction(
+      `${category}-${month}-${index}`,
+      `${month}-${String(index + 1).padStart(2, "0")}`,
+      amount + ((index % 3) - 1) * 2,
+      category
+    )
+  );
 }
 
 const tests: TestCase[] = [
@@ -1851,6 +1897,360 @@ wykonaj przelew teraz` });
       const next = calculateNextDailyRun(new Date("2026-07-03T07:30:00"), "08:00");
       assert.equal(next.getHours(), 8);
       assert.equal(next.getMinutes(), 0);
+    }
+  },
+
+  // Plan 20 - deterministic spending insights. Pure functions over injected
+  // data: no Prisma, no LLM, no clock.
+  {
+    name: "category deltas compare completed months and ignore the partial current month",
+    run() {
+      const deltas = computeCategoryDeltas(insightMonthlyTotals, {
+        lastCompletedMonth: "2026-06",
+        priorCompletedMonth: "2026-05"
+      });
+      const food = deltas.find((delta) => delta.category === "food");
+      const transport = deltas.find((delta) => delta.category === "transport");
+
+      // The current month holds 5000 in food; the delta must still read 1200.
+      assert.equal(food?.current, 1200);
+      assert.equal(food?.previous, 1000);
+      assert.equal(food?.delta, 200);
+      assert.equal(food?.deltaPercent, 20);
+      assert.equal(transport?.delta, -200);
+      assert.equal(transport?.deltaPercent, -40);
+    }
+  },
+  {
+    name: "category delta percent is null for new spending and movers are sorted and capped",
+    run() {
+      const deltas = computeCategoryDeltas(insightMonthlyTotals, {
+        lastCompletedMonth: "2026-06",
+        priorCompletedMonth: "2026-05"
+      });
+
+      assert.equal(deltas[0].category, "shopping");
+      assert.equal(deltas[0].previous, 0);
+      assert.equal(deltas[0].deltaPercent, null);
+      // Equal absolute deltas fall back to a stable category order.
+      assert.deepEqual(deltas.map((delta) => delta.category), ["shopping", "food", "transport"]);
+
+      const capped = computeCategoryDeltas(insightMonthlyTotals, {
+        lastCompletedMonth: "2026-06",
+        priorCompletedMonth: "2026-05",
+        limit: 2
+      });
+      assert.equal(capped.length, 2);
+    }
+  },
+  {
+    name: "current-month pace projects the partial month and stays out of the deltas",
+    run() {
+      const insights = buildSpendingInsights({
+        today: "2026-07-10",
+        monthlyTotals: insightMonthlyTotals,
+        transactions: [],
+        knownMerchantKeys: [],
+        budgets: []
+      });
+
+      // 5000 spent over 10 of 31 days projects to 15500 against June's 2400.
+      assert.equal(insights.pace.month, "2026-07");
+      assert.equal(insights.pace.monthToDate, 5000);
+      assert.equal(insights.pace.dayOfMonth, 10);
+      assert.equal(insights.pace.daysInMonth, 31);
+      assert.equal(insights.pace.projected, 15_500);
+      assert.equal(insights.pace.previousMonth, "2026-06");
+      assert.equal(insights.pace.previousTotal, 2400);
+      assert.equal(insights.pace.delta, 13_100);
+      assert.equal(insights.deltas.every((delta) => delta.current !== 5000), true);
+
+      // With no previous month there is no percentage to divide by.
+      const firstMonth = computeSpendingPace([{ month: "2026-07", category: "food", total: 620 }], {
+        today: "2026-07-10",
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.equal(firstMonth.projected, 1922);
+      assert.equal(firstMonth.previousTotal, 0);
+      assert.equal(firstMonth.deltaPercent, null);
+    }
+  },
+  {
+    name: "amount-outlier rule fires on a category outlier and leaves normal amounts alone",
+    run() {
+      const transactions = [
+        ...flatSamples("food", "2026-04", 8, 50),
+        insightTransaction("food-normal", "2026-06-04", 55, "food"),
+        insightTransaction("food-outlier", "2026-06-08", 900, "food")
+      ];
+      const detection = detectSpendingAnomalies({
+        transactions,
+        monthlyTotals: [],
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+
+      assert.deepEqual(detection.evaluatedRules, ["amount_outlier"]);
+      assert.equal(detection.flags.length, 1);
+      assert.equal(detection.flags[0].transactionId, "food-outlier");
+      assert.deepEqual(detection.flags[0].rules, ["amount_outlier"]);
+
+      // An all-identical history has a MAD of 0; only a genuine multiple of the
+      // usual amount may trip the rule then, never a cent above the median.
+      const flat = detectSpendingAnomalies({
+        transactions: [
+          ...Array.from({ length: 8 }, (_, index) => insightTransaction(`flat-${index}`, `2026-04-0${index + 1}`, 50, "food")),
+          insightTransaction("flat-mid", "2026-06-04", 120, "food"),
+          insightTransaction("flat-big", "2026-06-05", 200, "food")
+        ],
+        monthlyTotals: [],
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.deepEqual(flat.flags.map((flag) => flag.transactionId), ["flat-big"]);
+    }
+  },
+  {
+    name: "amount-outlier rule is suppressed below its minimum sample count",
+    run() {
+      const detection = detectSpendingAnomalies({
+        transactions: [...flatSamples("food", "2026-04", 7, 50), insightTransaction("food-outlier", "2026-06-08", 900, "food")],
+        monthlyTotals: [],
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+
+      assert.deepEqual(detection.evaluatedRules, []);
+      assert.deepEqual(detection.flags, []);
+    }
+  },
+  {
+    name: "category-spike rule fires on the spiking month's largest transaction",
+    run() {
+      const monthlyTotals: InsightMonthlyTotal[] = [
+        { month: "2026-03", category: "shopping", total: 400 },
+        { month: "2026-04", category: "shopping", total: 400 },
+        { month: "2026-05", category: "shopping", total: 400 },
+        { month: "2026-06", category: "shopping", total: 1500 }
+      ];
+      const detection = detectSpendingAnomalies({
+        transactions: [
+          insightTransaction("shop-small", "2026-06-03", 500, "shopping"),
+          insightTransaction("shop-large", "2026-06-11", 1000, "shopping")
+        ],
+        monthlyTotals,
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+
+      assert.deepEqual(detection.evaluatedRules, ["category_spike"]);
+      assert.equal(detection.flags.length, 1);
+      assert.equal(detection.flags[0].transactionId, "shop-large");
+      assert.deepEqual(detection.flags[0].rules, ["category_spike"]);
+
+      // Below the absolute PLN floor the same relative spike must not trip.
+      const tiny = detectSpendingAnomalies({
+        transactions: [insightTransaction("tiny", "2026-06-11", 100, "shopping")],
+        monthlyTotals: monthlyTotals.map((entry) => ({ ...entry, total: entry.month === "2026-06" ? 100 : 20 })),
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.deepEqual(tiny.flags, []);
+
+      // With only two prior months the rule has no history to judge against.
+      const coldStart = detectSpendingAnomalies({
+        transactions: [insightTransaction("shop-large", "2026-06-11", 1000, "shopping")],
+        monthlyTotals: monthlyTotals.filter((entry) => entry.month !== "2026-03"),
+        knownMerchantKeys: [],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.deepEqual(coldStart.evaluatedRules, []);
+      assert.deepEqual(coldStart.flags, []);
+    }
+  },
+  {
+    name: "new-merchant rule fires once per unseen merchant above the floor",
+    run() {
+      const transactions = [
+        insightTransaction("new-1", "2026-07-02", 250, "shopping", "Nowy Sklep"),
+        insightTransaction("new-2", "2026-07-05", 300, "shopping", "Nowy Sklep"),
+        insightTransaction("small", "2026-07-06", 50, "shopping", "Inny Sklep"),
+        insightTransaction("known", "2026-07-07", 400, "food", "Biedronka")
+      ];
+      const detection = detectSpendingAnomalies({
+        transactions,
+        monthlyTotals: [],
+        knownMerchantKeys: ["biedronka", "zabka", "orlen", "empik", "rossmann"],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+
+      assert.deepEqual(detection.evaluatedRules, ["new_merchant"]);
+      assert.deepEqual(detection.flags.map((flag) => flag.transactionId), ["new-1"]);
+      assert.deepEqual(detection.flags[0].rules, ["new_merchant"]);
+
+      // Without a merchant baseline every merchant would look new, so the rule stays silent.
+      const coldStart = detectSpendingAnomalies({
+        transactions,
+        monthlyTotals: [],
+        knownMerchantKeys: ["biedronka", "zabka"],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+      assert.deepEqual(coldStart.evaluatedRules, []);
+      assert.deepEqual(coldStart.flags, []);
+    }
+  },
+  {
+    name: "one transaction can carry every anomaly label at once",
+    run() {
+      const detection = detectSpendingAnomalies({
+        transactions: [
+          ...flatSamples("shopping", "2026-03", 4, 100),
+          ...flatSamples("shopping", "2026-04", 4, 100),
+          ...flatSamples("shopping", "2026-05", 4, 100),
+          insightTransaction("june-blowout", "2026-06-12", 1500, "shopping", "Nowy Sklep")
+        ],
+        monthlyTotals: [
+          { month: "2026-03", category: "shopping", total: 400 },
+          { month: "2026-04", category: "shopping", total: 400 },
+          { month: "2026-05", category: "shopping", total: 400 },
+          { month: "2026-06", category: "shopping", total: 1500 }
+        ],
+        knownMerchantKeys: ["biedronka", "zabka", "orlen", "empik", "rossmann"],
+        currentMonth: "2026-07",
+        lastCompletedMonth: "2026-06"
+      });
+
+      assert.equal(detection.flags.length, 1);
+      assert.deepEqual(detection.flags[0].rules, ["amount_outlier", "category_spike", "new_merchant"]);
+    }
+  },
+  {
+    name: "empty insights report a cold start instead of inventing anomalies",
+    run() {
+      const insights = emptySpendingInsights("2026-07-10");
+
+      assert.equal(insights.anomaliesStarved, true);
+      assert.deepEqual(insights.anomalies, []);
+      assert.deepEqual(insights.deltas, []);
+      assert.deepEqual(insights.budgets, []);
+    }
+  },
+  {
+    name: "budget status covers the on_track, near and over boundaries and skips untracked categories",
+    run() {
+      const monthlyTotals: InsightMonthlyTotal[] = [
+        { month: "2026-07", category: "food", total: 700 },
+        { month: "2026-07", category: "transport", total: 400 },
+        { month: "2026-07", category: "shopping", total: 300 },
+        { month: "2026-07", category: "housing", total: 1000 },
+        { month: "2026-07", category: "health", total: 900 }
+      ];
+      const statuses = computeBudgetStatuses(
+        [
+          { category: "food", amount: 1000 },
+          { category: "transport", amount: 500 },
+          { category: "shopping", amount: 200 },
+          { category: "housing", amount: 1000 }
+        ],
+        monthlyTotals,
+        "2026-07"
+      );
+      const byCategory = new Map(statuses.map((status) => [status.category, status]));
+
+      assert.equal(byCategory.get("food")?.status, "on_track");
+      // Exactly at the 80% boundary and exactly at 100% are both "near".
+      assert.equal(byCategory.get("transport")?.status, "near");
+      assert.equal(byCategory.get("housing")?.status, "near");
+      assert.equal(byCategory.get("shopping")?.status, "over");
+      assert.equal(byCategory.get("shopping")?.spent, 300);
+      // health has no budget row, so it is untracked and never flags.
+      assert.equal(byCategory.has("health"), false);
+      assert.equal(statuses[0].category, "shopping");
+    }
+  },
+  {
+    name: "budget breaches write one observation per category and dedupe per month",
+    async run() {
+      const stored: Array<{ content: string }> = [];
+      const db = {
+        observation: {
+          findMany: async () => stored.map((observation) => ({ content: observation.content })),
+          createMany: async ({ data }: { data: Array<{ content: string }> }) => {
+            stored.push(...data);
+            return { count: data.length };
+          }
+        }
+      } as unknown as PrismaClient;
+      const input = {
+        threadId: "manual-review",
+        resourceId: "local-user",
+        month: "2026-07",
+        breaches: [
+          { category: "shopping", spent: 300, budget: 200 },
+          { category: "food", spent: 1200, budget: 1000 }
+        ]
+      };
+
+      const first = await writeBudgetBreachObservations(db, input);
+      assert.deepEqual(first.written, ["shopping", "food"]);
+      assert.equal(stored.length, 2);
+      assert.equal(stored[0].content.includes(budgetBreachMarker("shopping", "2026-07")), true);
+
+      // A second run in the same month must not write the same breach again.
+      const second = await writeBudgetBreachObservations(db, input);
+      assert.deepEqual(second.written, []);
+      assert.deepEqual(second.skipped, ["shopping", "food"]);
+      assert.equal(stored.length, 2);
+
+      // A new month is a new breach.
+      const nextMonth = await writeBudgetBreachObservations(db, { ...input, month: "2026-08" });
+      assert.deepEqual(nextMonth.written, ["shopping", "food"]);
+      assert.equal(stored.length, 4);
+    }
+  },
+  {
+    name: "run memory leaves budget-breach flags to the deduped writer",
+    async run() {
+      const created: Array<{ topic: string }> = [];
+      const db = {
+        observationRecord: { create: async () => ({ id: "record-1" }) },
+        observation: {
+          createMany: async ({ data }: { data: Array<{ topic: string }> }) => {
+            created.push(...data);
+            return { count: data.length };
+          },
+          findMany: async () => []
+        }
+      } as unknown as PrismaClient;
+      const portfolio = analysePortfolio(sampleContext);
+      const report = buildReportDraft(sampleContext, portfolio, []);
+
+      await writeObservationMemory(db, {
+        runId: "run-1",
+        threadId: "manual-review",
+        resourceId: "local-user",
+        context: sampleContext,
+        report,
+        recommendations: [],
+        riskFlags: [
+          { level: "warning", topic: BUDGET_BREACH_TOPIC, message: "Budżet kategorii food przekroczony." },
+          { level: "warning", topic: "category-delta", message: "Kategoria food wzrosła." }
+        ]
+      });
+
+      // The generic risk-flag path would write one copy per run; only the
+      // non-budget flag may reach memory here.
+      assert.equal(created.some((observation) => observation.topic === BUDGET_BREACH_TOPIC), false);
+      assert.equal(created.some((observation) => observation.topic === "category-delta"), true);
     }
   }
 ];

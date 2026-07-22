@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { defaultStrategy, strategyFromSettings } from "@/domain/portfolio/strategy";
+import { buildSpendingInsights } from "@/domain/portfolio/spending-insights";
+import { loadSpendingInsightsInputs } from "@/domain/portfolio/spending-insights-loader";
 import { checkGmailMcpHealth } from "@/domain/imports/gmail-mcp-adapter";
 import { ensureSchedulerState } from "@/domain/scheduler/daily-scheduler";
 import { startInAppScheduler } from "@/domain/scheduler/in-app-scheduler";
@@ -201,7 +203,8 @@ export async function loadDashboardData(params: SearchParams) {
       localLlmHealth,
       gmailHealth,
       langfuseStatus,
-      schedulerState
+      schedulerState,
+      spendingInsightsInputs
     ] = await Promise.all([
       prisma.position.findMany({
         include: { account: true, asset: true },
@@ -249,7 +252,8 @@ export async function loadDashboardData(params: SearchParams) {
       checkLocalLlmHealth(),
       checkGmailMcpHealth(),
       checkLocalLangfuseStatus(),
-      ensureSchedulerState(prisma)
+      ensureSchedulerState(prisma),
+      loadSpendingInsightsInputs(prisma, { now })
     ]);
 
     snapshotHistory.reverse();
@@ -332,6 +336,10 @@ export async function loadDashboardData(params: SearchParams) {
       monthlyInflow,
       monthlyCashflow,
       topCategories,
+      // Deterministic plan-20 insight cards; every field is already a plain
+      // number/string, so it can cross into a client component unchanged.
+      spendingInsights: buildSpendingInsights(spendingInsightsInputs),
+      categoryBudgets: spendingInsightsInputs.budgets,
       filteredInflow,
       filteredOutflow,
       filteredCount,

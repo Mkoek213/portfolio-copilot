@@ -1,6 +1,18 @@
 import type { AnalysisResult, Opportunity, PortfolioContext, Recommendation, RiskFlag } from "@/domain/portfolio/types";
+import { ANOMALY_RULE_LABELS } from "@/domain/portfolio/spending-insights";
 
 const NON_ESSENTIAL_CATEGORIES = new Set(["subscriptions", "entertainment", "shopping"]);
+
+// A month-over-month category move below this PLN amount is noise, not a finding.
+const MATERIAL_CATEGORY_DELTA = 300;
+
+// How far the projected current-month pace may run above the last completed
+// month before it is worth flagging.
+const PACE_WARNING_MULTIPLIER = 1.15;
+
+function amount(value: number, currency: string) {
+  return `${value.toLocaleString("pl-PL")} ${currency}`;
+}
 
 export function analyseSpending(context: PortfolioContext): Pick<AnalysisResult, "summary" | "opportunities" | "recommendations" | "riskFlags" | "unknowns"> {
   const flags: RiskFlag[] = [];
@@ -56,6 +68,68 @@ export function analyseSpending(context: PortfolioContext): Pick<AnalysisResult,
     });
   }
 
+  // Deterministic plan-20 insights: the numbers are already computed, the
+  // analyst only turns them into flags the reporter can narrate.
+  const { deltas, pace, anomalies, budgets } = context.spendingInsights;
+  const topIncrease = deltas.find((delta) => delta.delta > 0);
+  const overBudget = budgets.filter((budget) => budget.status === "over");
+  const nearBudget = budgets.filter((budget) => budget.status === "near");
+
+  if (topIncrease && topIncrease.delta >= MATERIAL_CATEGORY_DELTA) {
+    flags.push({
+      level: "warning",
+      topic: "category-delta",
+      message: `Kategoria ${topIncrease.category} wzrosła o ${amount(topIncrease.delta, context.baseCurrency)} między ${context.spendingInsights.months.priorCompleted} a ${context.spendingInsights.months.lastCompleted}.`,
+      metric: topIncrease.delta
+    });
+  }
+
+  if (pace.previousTotal > 0 && pace.projected > pace.previousTotal * PACE_WARNING_MULTIPLIER) {
+    flags.push({
+      level: "warning",
+      topic: "spending-pace",
+      message: `Prognozowane tempo wydatków w ${pace.month} to ${amount(pace.projected, context.baseCurrency)} wobec ${amount(pace.previousTotal, context.baseCurrency)} w ${pace.previousMonth}. To projekcja z ${pace.dayOfMonth} z ${pace.daysInMonth} dni, nie zamknięty miesiąc.`,
+      metric: pace.projected - pace.previousTotal
+    });
+  }
+
+  for (const budget of overBudget) {
+    flags.push({
+      level: "warning",
+      topic: "budget-breach",
+      message: `Budżet kategorii ${budget.category} przekroczony: ${amount(budget.spent, context.baseCurrency)} z ${amount(budget.budget, context.baseCurrency)}.`,
+      metric: budget.spent - budget.budget
+    });
+  }
+
+  if (nearBudget.length > 0) {
+    flags.push({
+      level: "info",
+      topic: "budget-near",
+      message: `Blisko limitu: ${nearBudget.map((budget) => budget.category).join(", ")}.`,
+      metric: nearBudget.length
+    });
+  }
+
+  if (anomalies.length > 0) {
+    const notable = anomalies[0];
+
+    flags.push({
+      level: "info",
+      topic: "spending-anomaly",
+      message: `Oznaczono ${anomalies.length} nietypowych transakcji. Największa: ${notable.merchant ?? notable.category} na ${amount(notable.amount, context.baseCurrency)} (${notable.rules.map((rule) => ANOMALY_RULE_LABELS[rule]).join(", ")}).`,
+      metric: anomalies.length
+    });
+  }
+
+  if (overBudget.length > 0) {
+    recommendations.push({
+      title: "Zejdź z wydatkami w kategoriach po limicie",
+      rationale: `Przekroczone budżety w tym miesiącu: ${overBudget.map((budget) => `${budget.category} ${amount(budget.spent, context.baseCurrency)}/${amount(budget.budget, context.baseCurrency)}`).join("; ")}.`,
+      priority: "high"
+    });
+  }
+
   if (monthlyInvestmentCapacity != null && netCashflow < monthlyInvestmentCapacity) {
     recommendations.push({
       title: "Dopasuj plan inwestowania do faktycznego cashflow",
@@ -64,8 +138,13 @@ export function analyseSpending(context: PortfolioContext): Pick<AnalysisResult,
     });
   }
 
+  const moverSentence = topIncrease
+    ? ` Największy ruch miesiąc do miesiąca: ${topIncrease.category} ${topIncrease.delta > 0 ? "+" : ""}${amount(topIncrease.delta, context.baseCurrency)}.`
+    : "";
+  const paceSentence = ` Prognozowane tempo bieżącego miesiąca: ${amount(pace.projected, context.baseCurrency)} (projekcja z ${pace.dayOfMonth}/${pace.daysInMonth} dni).`;
+
   return {
-    summary: `W bieżącym miesiącu wpływy wynoszą ${monthlyInflow.toLocaleString("pl-PL")} ${context.baseCurrency}, wydatki ${monthlyOutflow.toLocaleString("pl-PL")} ${context.baseCurrency}, a cashflow ${netCashflow.toLocaleString("pl-PL")} ${context.baseCurrency}.`,
+    summary: `W bieżącym miesiącu wpływy wynoszą ${monthlyInflow.toLocaleString("pl-PL")} ${context.baseCurrency}, wydatki ${monthlyOutflow.toLocaleString("pl-PL")} ${context.baseCurrency}, a cashflow ${netCashflow.toLocaleString("pl-PL")} ${context.baseCurrency}.${moverSentence}${paceSentence}`,
     opportunities,
     recommendations,
     riskFlags: flags,

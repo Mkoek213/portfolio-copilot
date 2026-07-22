@@ -8,7 +8,7 @@ import { reviewRisks } from "@/domain/agents/risk-reviewer";
 import { analyseSpending } from "@/domain/agents/spending-analyst";
 import { planStrategyAdjustments } from "@/domain/agents/strategy-planner";
 import { assemblePortfolioContext } from "@/domain/portfolio/context-assembler";
-import { writeObservationMemory } from "@/domain/memory/observational-memory";
+import { writeBudgetBreachObservations, writeObservationMemory } from "@/domain/memory/observational-memory";
 import { traceStep } from "@/domain/tracing/local-tracing";
 import { isLocalLlmReporterEnabled } from "@/lib/llm/local-llm-client";
 
@@ -246,6 +246,25 @@ export async function runPortfolioAnalysis(db: PrismaClient, options: RunPortfol
         riskFlags
       })
     );
+
+    // Budget alerts: one memory record per category over its cap this month,
+    // deduped per category per month so repeated runs never spam the Memory tab.
+    const breaches = await traceStep(db, { traceId, runId: run.id, resourceId: run.resourceId, name: "budget-alerts" }, () =>
+      writeBudgetBreachObservations(db, {
+        threadId: run.threadId,
+        resourceId: run.resourceId,
+        month: context.spendingInsights.months.current,
+        currency: context.baseCurrency,
+        breaches: context.spendingInsights.budgets.filter((budget) => budget.status === "over")
+      })
+    );
+
+    if (breaches.written.length > 0 || breaches.skipped.length > 0) {
+      await event(db, run.id, "budget-alerts", `Budget breaches written: ${breaches.written.length}, already recorded this month: ${breaches.skipped.length}.`, {
+        level: breaches.written.length > 0 ? "WARN" : "INFO",
+        metadata: { written: breaches.written, skipped: breaches.skipped }
+      });
+    }
 
     await event(db, run.id, "reflector", memoryWrite.reflection ? "Reflection created after threshold." : "Reflection threshold not reached.");
 
