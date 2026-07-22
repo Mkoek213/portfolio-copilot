@@ -287,6 +287,23 @@ model CategoryRule {
   @@index([resourceId])
 }
 
+// An optional monthly PLN cap for one expense category. Absence of a row means
+// the category is untracked; there is no rollover and no per-period variant.
+// `category` is validated as an ExpenseCategory at the Server Action boundary,
+// matching the repo's String-column convention. See plan 20.
+model CategoryBudget {
+  id         String   @id @default(cuid())
+  resourceId String
+  category   String
+  amount     Decimal  @db.Decimal(24, 2)
+  currency   String   @default("PLN")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([resourceId, category])
+  @@index([resourceId])
+}
+
 model AgentRun {
   id            String              @id @default(cuid())
   threadId      String
