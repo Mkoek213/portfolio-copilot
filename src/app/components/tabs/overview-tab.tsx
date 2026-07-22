@@ -7,6 +7,7 @@ import type { DashboardData } from "../../dashboard-data";
 import { AllocationStack, CashflowChart, CategoryBars, Sparkline } from "../charts";
 import { assetClassSeries } from "../chart-series";
 import { SectionCard, StatTile, StatusChip, riskTone } from "../ui";
+import { BudgetStatusCard, CategoryDeltasCard, SpendingAnomaliesCard } from "../spending-insight-cards";
 
 type RiskFlag = { level: string; topic: string; message: string };
 
@@ -77,6 +78,15 @@ export function OverviewTab({ data }: { data: DashboardData }) {
         <SectionCard title="Portfolio allocation" sub={data.allocationIsLive ? "live from positions" : "from latest analysis run"}>
           <AllocationStack items={data.allocationByClass} targets={targets} totalValue={data.totalValue} />
         </SectionCard>
+      </section>
+
+      <section className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1" aria-label="Spending insights">
+        <CategoryDeltasCard insights={data.spendingInsights} />
+        <BudgetStatusCard insights={data.spendingInsights} />
+      </section>
+
+      <section className="grid gap-[18px]" aria-label="Unusual transactions">
+        <SpendingAnomaliesCard insights={data.spendingInsights} />
       </section>
 
       <section className="grid grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)] gap-[18px] max-[1160px]:grid-cols-1" aria-label="Positions and risks">
