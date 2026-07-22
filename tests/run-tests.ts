@@ -27,6 +27,7 @@ import { categorizeMbankTransaction, parseMbankEmail } from "../src/domain/impor
 import { parseMbankStatement, type StatementRow } from "../src/domain/imports/mbank-statement-parser";
 import { categorizeTransactionsWithLlm, type LlmChatFn } from "../src/domain/imports/llm-categorizer";
 import { normalizeMerchantKey, ruleMapKey } from "../src/domain/imports/category-rules";
+import { emptySpendingInsights } from "../src/domain/portfolio/spending-insights";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -102,6 +103,7 @@ const sampleContext: PortfolioContext = {
     topCategories: [{ key: "food", label: "food", value: 42.5, percent: 100 }],
     recentTransactionCount: 2
   },
+  spendingInsights: emptySpendingInsights("2026-07-03"),
   imports: [
     {
       id: "batch-1",

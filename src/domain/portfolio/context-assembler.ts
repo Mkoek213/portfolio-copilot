@@ -1,6 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { buildAllocation, roundMoney, roundPercent } from "./calculations";
 import { getOrCreateStrategySettings, getOrCreateUserFinancialProfile, strategyFromSettings } from "./strategy";
+import { buildSpendingInsights } from "./spending-insights";
+import { loadSpendingInsightsInputs } from "./spending-insights-loader";
 import type { AllocationItem, PortfolioContext, PositionSnapshot, TransactionSnapshot } from "./types";
 
 function buildCategoryAllocation(transactions: TransactionSnapshot[], totalOutflow: number): AllocationItem[] {
@@ -40,7 +42,7 @@ export async function assemblePortfolioContext(db: PrismaClient): Promise<Portfo
   const currentMonthStart = startOfCurrentMonth(now);
   const recentStart = recentWindow(now, 90);
 
-  const [rows, strategySettings, financialProfile, transactions, imports, reports, observations, reflections] = await Promise.all([
+  const [rows, strategySettings, financialProfile, transactions, imports, reports, observations, reflections, insightsInputs] = await Promise.all([
     db.position.findMany({
       include: {
         account: true,
@@ -72,7 +74,8 @@ export async function assemblePortfolioContext(db: PrismaClient): Promise<Portfo
       where: { resourceId: "local-user" },
       orderBy: { createdAt: "desc" },
       take: 5
-    })
+    }),
+    loadSpendingInsightsInputs(db, { now })
   ]);
   const strategy = strategyFromSettings(strategySettings, financialProfile);
 
@@ -149,6 +152,7 @@ export async function assemblePortfolioContext(db: PrismaClient): Promise<Portfo
       topCategories: buildCategoryAllocation(currentMonthTransactions, monthlyOutflow),
       recentTransactionCount: transactionSnapshots.length
     },
+    spendingInsights: buildSpendingInsights(insightsInputs),
     imports: imports.map((batch) => ({
       id: batch.id,
       status: batch.status,
