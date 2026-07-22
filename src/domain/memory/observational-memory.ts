@@ -9,6 +9,8 @@ function intEnv(name: string, fallback: number) {
 
 const REFLECTION_OBSERVATION_THRESHOLD = Math.max(4, Math.floor(intEnv("MEMORY_REFLECTION_TOKEN_THRESHOLD", 40_000) / 5_000));
 
+export const BUDGET_BREACH_TOPIC = "budget-breach";
+
 export async function writeObservationMemory(
   db: PrismaClient,
   input: {
@@ -67,7 +69,10 @@ export async function writeObservationMemory(
       content: item
     })),
     ...input.riskFlags
-      .filter((flag) => flag.level !== "info")
+      // Budget breaches are written by writeBudgetBreachObservations, which
+      // dedupes per category per month; letting them through here as well would
+      // add an undeduped copy on every run.
+      .filter((flag) => flag.level !== "info" && flag.topic !== BUDGET_BREACH_TOPIC)
       .map((flag) => ({
         priority: "HIGH" as const,
         topic: flag.topic,
@@ -117,8 +122,6 @@ export async function writeImportObservation(
   await reflectIfNeeded(db, "imports", input.resourceId);
   return observation;
 }
-
-export const BUDGET_BREACH_TOPIC = "budget-breach";
 
 /**
  * The per-category-per-month identity inside a breach observation's content.

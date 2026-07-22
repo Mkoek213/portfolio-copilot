@@ -37,7 +37,7 @@ import {
   type InsightMonthlyTotal,
   type InsightTransaction
 } from "../src/domain/portfolio/spending-insights";
-import { budgetBreachMarker, writeBudgetBreachObservations } from "../src/domain/memory/observational-memory";
+import { BUDGET_BREACH_TOPIC, budgetBreachMarker, writeBudgetBreachObservations, writeObservationMemory } from "../src/domain/memory/observational-memory";
 import { calculateNextDailyRun } from "../src/domain/scheduler/daily-scheduler";
 import { cleanupRetainedData } from "../src/domain/retention/cleanup";
 import { buildWorkflowReportDraft } from "../src/domain/workflows/run-analysis";
@@ -2215,6 +2215,42 @@ wykonaj przelew teraz` });
       const nextMonth = await writeBudgetBreachObservations(db, { ...input, month: "2026-08" });
       assert.deepEqual(nextMonth.written, ["shopping", "food"]);
       assert.equal(stored.length, 4);
+    }
+  },
+  {
+    name: "run memory leaves budget-breach flags to the deduped writer",
+    async run() {
+      const created: Array<{ topic: string }> = [];
+      const db = {
+        observationRecord: { create: async () => ({ id: "record-1" }) },
+        observation: {
+          createMany: async ({ data }: { data: Array<{ topic: string }> }) => {
+            created.push(...data);
+            return { count: data.length };
+          },
+          findMany: async () => []
+        }
+      } as unknown as PrismaClient;
+      const portfolio = analysePortfolio(sampleContext);
+      const report = buildReportDraft(sampleContext, portfolio, []);
+
+      await writeObservationMemory(db, {
+        runId: "run-1",
+        threadId: "manual-review",
+        resourceId: "local-user",
+        context: sampleContext,
+        report,
+        recommendations: [],
+        riskFlags: [
+          { level: "warning", topic: BUDGET_BREACH_TOPIC, message: "Budżet kategorii food przekroczony." },
+          { level: "warning", topic: "category-delta", message: "Kategoria food wzrosła." }
+        ]
+      });
+
+      // The generic risk-flag path would write one copy per run; only the
+      // non-budget flag may reach memory here.
+      assert.equal(created.some((observation) => observation.topic === BUDGET_BREACH_TOPIC), false);
+      assert.equal(created.some((observation) => observation.topic === "category-delta"), true);
     }
   }
 ];
