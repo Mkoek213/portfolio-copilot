@@ -5,6 +5,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runPortfolioAnalysis } from "@/domain/workflows/run-analysis";
 import { LOCAL_RESOURCE_ID, defaultStrategy } from "@/domain/portfolio/strategy";
+import { BUDGET_CATEGORY_OPTIONS, isExpenseCategory } from "@/domain/portfolio/categories";
 import { mbankSyncModeLabel } from "@/domain/imports/mbank-sync-mode";
 import { confirmImportBatch, deleteAllResolvedImportBatches, deleteImportBatch, rejectAllPendingImportBatches, rejectImportBatch, retryParseImportBatch, syncMbankGmail, updateBankTransactionCategory, updateImportPreviewTransactionCategory, updateImportPreviewTransactionReview } from "@/domain/imports/mbank-import-pipeline";
 import { writeImportObservation } from "@/domain/memory/observational-memory";
@@ -211,6 +212,65 @@ export async function updateStrategyAction(_previousState: ActionResult, formDat
     return result("success", "Profile saved.", "The next analysis run will use the updated local profile.");
   } catch (error) {
     return result("error", "Profile was not saved.", error instanceof Error ? error.message : "Unknown database error.");
+  }
+}
+
+// One monthly PLN cap per expense category. A blank or zero input clears the
+// row (the category goes back to untracked); the category itself is validated
+// here because the DB column is a plain String.
+const categoryBudgetSchema = z.object({
+  category: z.string().refine(isExpenseCategory, "Unknown expense category."),
+  amount: z.union([z.literal(""), z.coerce.number().min(0).max(100_000_000)])
+});
+
+export async function updateCategoryBudgetsAction(_previousState: ActionResult, formData: FormData): Promise<ActionResult> {
+  void _previousState;
+
+  const tracked: Array<{ category: string; amount: number }> = [];
+  const cleared: string[] = [];
+
+  for (const option of BUDGET_CATEGORY_OPTIONS) {
+    const parsed = categoryBudgetSchema.safeParse({
+      category: option.value,
+      amount: formString(formData, `budget-${option.value}`)
+    });
+
+    if (!parsed.success) {
+      return result("error", "Budgets were not saved.", `Check the value for ${option.label}.`);
+    }
+
+    const { amount } = parsed.data;
+
+    if (amount === "" || amount === 0) {
+      cleared.push(option.value);
+    } else {
+      tracked.push({ category: option.value, amount });
+    }
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.categoryBudget.deleteMany({ where: { resourceId: LOCAL_RESOURCE_ID, category: { in: cleared } } }),
+      ...tracked.map((budget) =>
+        prisma.categoryBudget.upsert({
+          where: { resourceId_category: { resourceId: LOCAL_RESOURCE_ID, category: budget.category } },
+          update: { amount: budget.amount, currency: "PLN" },
+          create: { resourceId: LOCAL_RESOURCE_ID, category: budget.category, amount: budget.amount, currency: "PLN" }
+        })
+      )
+    ]);
+
+    revalidatePath("/");
+
+    return result(
+      "success",
+      "Budgets saved.",
+      tracked.length > 0
+        ? `${tracked.length} categor${tracked.length === 1 ? "y is" : "ies are"} tracked on the Overview budget card.`
+        : "All categories are untracked again."
+    );
+  } catch (error) {
+    return result("error", "Budgets were not saved.", error instanceof Error ? error.message : "Unknown database error.");
   }
 }
 

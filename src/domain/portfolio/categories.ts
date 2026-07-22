@@ -32,6 +32,9 @@ export const EXPENSE_CATEGORY_OPTIONS: Array<{ value: ExpenseCategory; label: st
   { value: "other", label: "inne" }
 ];
 
+// A budget caps spending, so the inflow bucket is never budgetable (plan 20).
+export const BUDGET_CATEGORY_OPTIONS = EXPENSE_CATEGORY_OPTIONS.filter((option) => option.value !== "income");
+
 export function isExpenseCategory(value: string): value is ExpenseCategory {
   return EXPENSE_CATEGORIES.includes(value as ExpenseCategory);
 }
